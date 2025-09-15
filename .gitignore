@@ -4,6 +4,7 @@
 snyk_matches_*.csv
 snyk_users_*.csv
 test_false_positives.csv
+snyk_severity_report_*.txt
 
 # Generated JSON output files
 *_output.json
