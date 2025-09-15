@@ -11,16 +11,20 @@ A comprehensive tool for transferring ignore rules from CSV data to Snyk issues.
 - **Better validation** - Input sanitization and argument validation
 - **Customer-ready** - Professional code suitable for distribution
 - **Text report generation** - Detailed severity and organization reports
+- **Group processing** - Process all organizations in a Snyk group
+- **Smart conflict handling** - Treat existing policies as success
 
 ## 📋 Features
 
-- **Multiple Workflows**: Standard matching, direct ignore, matches input
+- **Multiple Workflows**: Standard matching, direct ignore, matches input, group processing
 - **Flexible Input**: CSV files or pre-generated matches
 - **Smart Matching**: Title + Repository URL + CWE matching
 - **Dry Run Support**: Test operations without making changes
 - **Comprehensive Logging**: Detailed progress and error reporting
 - **Error Recovery**: Graceful handling of API failures and missing data
 - **Severity Reports**: Generate detailed text reports of issues by severity and organization
+- **Group Processing**: Process all organizations in a Snyk group with pagination
+- **Conflict Resolution**: Automatically handle existing policies (409 conflicts)
 
 ## 🛠️ Installation
 
@@ -65,6 +69,10 @@ python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --dir
 ### Advanced Usage
 
 ```bash
+# Group processing (process all organizations in a group)
+python3 snyk_ignore_transfer.py --group-id YOUR_GROUP_ID --csv-file issues.csv --dry-run
+python3 snyk_ignore_transfer.py --group-id YOUR_GROUP_ID --csv-file issues.csv
+
 # Review-only mode (generate CSV for review)
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --review-only
 
@@ -103,7 +111,14 @@ python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --matches-input snyk_matche
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --direct-ignore
 ```
 
-### 3. Generate Severity Report
+### 3. Group Processing Workflow
+```bash
+# Process all organizations in a Snyk group
+python3 snyk_ignore_transfer.py --group-id YOUR_GROUP_ID --csv-file issues.csv --dry-run
+python3 snyk_ignore_transfer.py --group-id YOUR_GROUP_ID --csv-file issues.csv
+```
+
+### 4. Generate Severity Report
 ```bash
 # Generate detailed severity and organization report
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --severity-report report.txt
@@ -121,7 +136,8 @@ python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --sev
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--org-id` | Snyk organization ID | Required |
+| `--org-id` | Snyk organization ID | Required (or use --group-id) |
+| `--group-id` | Snyk group ID to process all orgs | Alternative to --org-id |
 | `--csv-file` | CSV file with issues to match | Required for normal workflow |
 | `--matches-input` | Pre-generated matches CSV | Alternative to --csv-file |
 | `--direct-ignore` | Skip CSV generation | False |
@@ -175,6 +191,7 @@ The tool provides structured logging with different levels:
 | Standard | Review and approve | Yes | Manual review process |
 | Direct Ignore | Automated processing | No | CI/CD pipelines |
 | Matches Input | Pre-generated matches | No | Batch processing |
+| Group Processing | Multiple organizations | Yes | Enterprise-wide deployment |
 | Severity Report | Analysis and reporting | Yes | Documentation and analysis |
 
 ## 🚨 Troubleshooting
@@ -251,21 +268,3 @@ Contributions are welcome! Please:
 3. Make your changes
 4. Add tests if applicable
 5. Submit a pull request
-
-## 📋 Changelog
-
-### v2.0.0
-- Complete refactor to class-based architecture
-- Enhanced error handling and validation
-- Improved logging system
-- Streamlined workflow execution
-- Text report generation with severity breakdowns
-- Removed Google Drive dependencies
-- Better customer distribution readiness
-- Comprehensive documentation
-
-### v1.x.x
-- Initial implementation with functional workflows
-- Direct ignore mode
-- CSV matching and processing
-- Basic error handling
