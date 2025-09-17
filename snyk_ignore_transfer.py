@@ -1251,6 +1251,264 @@ def display_results_summary(results: Dict, dry_run: bool = False):
         print(f"   📈 Success rate: {success_rate:.1f}%")
 
 
+def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str) -> Dict:
+    """
+    Process a single organization with the current workflow.
+    
+    Args:
+        snyk_api: Snyk API client
+        args: Parsed command line arguments
+        org_id: Organization ID to process
+        org_name: Organization name for display
+        
+    Returns:
+        Dictionary with processing results
+    """
+    from datetime import datetime
+    
+    # Set the org_id for this iteration
+    original_org_id = args.org_id
+    args.org_id = org_id
+    
+    try:
+        print(f"   🔄 Processing organization: {org_name}")
+        
+        # Handle matches-input workflow
+        if args.matches_input:
+            print(f"   📄 Loading matches from: {args.matches_input}")
+            matches = load_matches_from_csv(args.matches_input)
+            if not matches:
+                print(f"   ❌ Error: No matches loaded from CSV file")
+                return {'success': False, 'error': 'No matches loaded'}
+            
+            # Set org_id in all loaded matches
+            for processed_issue, csv_row in matches:
+                processed_issue['key_data']['org_id'] = org_id
+            
+            print(f"   ✅ Loaded {len(matches)} matches for processing")
+            
+            # Process matches and ignore issues
+            print(f"   🚫 Processing loaded matches and ignoring issues")
+            results = process_matches_and_ignore_policies(
+                snyk_api=snyk_api,
+                matches=matches,
+                dry_run=args.dry_run,
+                reason=args.ignore_reason
+            )
+            
+            # Generate severity report if not in direct ignore mode
+            if not args.direct_ignore:
+                print(f"   📊 Generating severity and organization report")
+                severity_report_file = args.severity_report
+                if not severity_report_file:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                
+                processor = IssueProcessor(snyk_api)
+                processor.generate_severity_org_report(matches, severity_report_file)
+                print(f"   📄 Severity report saved to: {severity_report_file}")
+            
+            return {
+                'success': True,
+                'matches_processed': len(matches),
+                'successful_ignores': results['successful_ignores'],
+                'failed_ignores': results['failed_ignores']
+            }
+        
+        # Handle direct-ignore workflow
+        elif args.direct_ignore:
+            print(f"   📄 Using CSV file: {args.csv_file}")
+            
+            # Load CSV data
+            csv_data = load_csv_data(args.csv_file)
+            if not csv_data:
+                print(f"   ❌ Error: No CSV data loaded")
+                return {'success': False, 'error': 'No CSV data loaded'}
+            
+            print(f"   ✅ Loaded {len(csv_data)} rows from CSV")
+            
+            # Initialize issue processor
+            processor = IssueProcessor(snyk_api)
+            
+            # Get all code issues for the organization
+            print(f"   🚀 Fetching all code issues for organization {org_id}")
+            all_issues = snyk_api.get_all_code_issues(org_id)
+            
+            if not all_issues:
+                print(f"   ℹ️  No code issues found in organization")
+                return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
+            
+            # Enrich issues with target information
+            print(f"   🔗 Enriching issues with target information")
+            enriched_issues = processor.enrich_issues_with_targets(org_id, all_issues)
+            
+            # Process issues to get key data
+            print(f"   🔍 Processing issue data and fetching details")
+            processed_issues = []
+            
+            for i, issue in enumerate(enriched_issues, 1):
+                if i % 100 == 0 or i == 1:
+                    print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
+                
+                key_data = processor.extract_issue_key_data(issue)
+                processed_issue = {
+                    'raw_issue': issue,
+                    'key_data': key_data
+                }
+                processed_issues.append(processed_issue)
+            
+            print(f"   ✅ Processed {len(processed_issues)} issues with detailed information")
+            
+            # Match issues with CSV data
+            print(f"   🔍 Matching Snyk issues with CSV false positives")
+            matches = processor.match_issues_with_csv(
+                processed_issues=processed_issues,
+                csv_data=csv_data,
+                repo_url_field=args.repo_url_field
+            )
+            
+            if not matches:
+                print(f"   ℹ️  No matches found between Snyk issues and CSV false positives")
+                return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
+            
+            print(f"   🎯 Found {len(matches)} total matches")
+            
+            # Process matches and ignore issues
+            print(f"   🚫 Processing matches and ignoring issues")
+            results = process_matches_and_ignore_policies(
+                snyk_api=snyk_api,
+                matches=matches,
+                dry_run=args.dry_run,
+                reason=args.ignore_reason
+            )
+            
+            # Generate severity report
+            print(f"   📊 Generating severity and organization report")
+            severity_report_file = args.severity_report
+            if not severity_report_file:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+            
+            processor.generate_severity_org_report(matches, severity_report_file)
+            print(f"   📄 Severity report saved to: {severity_report_file}")
+            
+            return {
+                'success': True,
+                'matches_processed': len(matches),
+                'successful_ignores': results['successful_ignores'],
+                'failed_ignores': results['failed_ignores']
+            }
+        
+        # Handle normal workflow
+        else:
+            print(f"   🔍 Standard matching workflow")
+            
+            # Initialize issue processor
+            processor = IssueProcessor(snyk_api)
+            
+            # Get all code issues for the organization
+            print(f"   🚀 Fetching all code issues for organization {org_id}")
+            all_issues = snyk_api.get_all_code_issues(org_id)
+            
+            if not all_issues:
+                print(f"   ℹ️  No code issues found in organization")
+                return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
+            
+            # Enrich issues with target information
+            print(f"   🔗 Enriching issues with target information")
+            enriched_issues = processor.enrich_issues_with_targets(org_id, all_issues)
+            
+            # Load CSV data for comparison
+            print(f"   📄 Loading CSV data for comparison")
+            csv_data = load_csv_data(args.csv_file)
+            
+            if not csv_data:
+                print(f"   ❌ Error: No CSV data loaded")
+                return {'success': False, 'error': 'No CSV data loaded'}
+            
+            # Process issues to get key data
+            print(f"   🔍 Processing issue data and fetching details")
+            processed_issues = []
+            
+            for i, issue in enumerate(enriched_issues, 1):
+                if i % 100 == 0 or i == 1:
+                    print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
+                
+                key_data = processor.extract_issue_key_data(issue)
+                processed_issue = {
+                    'raw_issue': issue,
+                    'key_data': key_data
+                }
+                processed_issues.append(processed_issue)
+            
+            print(f"   ✅ Processed {len(processed_issues)} issues with detailed information")
+            
+            # Match issues with CSV data
+            print(f"   🔍 Matching Snyk issues with CSV false positives")
+            matches = processor.match_issues_with_csv(
+                processed_issues=processed_issues,
+                csv_data=csv_data,
+                repo_url_field=args.repo_url_field
+            )
+            
+            if not matches:
+                print(f"   ℹ️  No matches found between Snyk issues and CSV false positives")
+                return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
+            
+            print(f"   🎯 Found {len(matches)} total matches")
+            
+            # Save matches to CSV for review
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            matches_csv_file = f"snyk_matches_{org_name}_{timestamp}.csv"
+            
+            print(f"   📊 Saving matches to CSV for review")
+            save_matches_to_csv(matches, matches_csv_file)
+            
+            # Process matches and ignore issues (unless review-only mode)
+            if args.review_only:
+                print(f"   📋 Review-only mode: Matches saved to {matches_csv_file} for review")
+                return {
+                    'success': True,
+                    'matches_processed': len(matches),
+                    'successful_ignores': 0,
+                    'failed_ignores': 0,
+                    'matches_csv': matches_csv_file
+                }
+            else:
+                print(f"   🚫 Processing matches and ignoring issues")
+                results = process_matches_and_ignore_policies(
+                    snyk_api=snyk_api,
+                    matches=matches,
+                    dry_run=args.dry_run,
+                    reason=args.ignore_reason
+                )
+                
+                # Generate severity report
+                print(f"   📊 Generating severity and organization report")
+                severity_report_file = args.severity_report
+                if not severity_report_file:
+                    severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                
+                processor.generate_severity_org_report(matches, severity_report_file)
+                print(f"   📄 Severity report saved to: {severity_report_file}")
+                
+                return {
+                    'success': True,
+                    'matches_processed': len(matches),
+                    'successful_ignores': results['successful_ignores'],
+                    'failed_ignores': results['failed_ignores'],
+                    'matches_csv': matches_csv_file
+                }
+    
+    except Exception as e:
+        print(f"   ❌ Error processing organization {org_name}: {e}")
+        return {'success': False, 'error': str(e)}
+    
+    finally:
+        # Restore original org_id
+        args.org_id = original_org_id
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Transfer ignores from CSV data to Snyk issues",
@@ -1324,9 +1582,9 @@ is that review-only mode skips the actual ignoring of issues.
     # Validate arguments
     if args.matches_input:
         # When loading matches from CSV, only org_id is required (for ignoring)
-        # Note: Group processing with matches-input is not supported yet
-        if not args.org_id:
-            print("❌ Error: --org-id is required when using --matches-input (group processing not supported with matches-input)")
+        # Group processing with matches-input is now supported
+        if not args.org_id and not args.group_id:
+            print("❌ Error: Either --org-id or --group-id is required when using --matches-input")
             sys.exit(1)
         if args.review_only:
             print("❌ Error: Cannot use --review-only with --matches-input")
@@ -1375,6 +1633,9 @@ is that review-only mode skips the actual ignoring of issues.
         total_orgs = len(orgs)
         successful_orgs = 0
         failed_orgs = 0
+        total_matches = 0
+        total_successful_ignores = 0
+        total_failed_ignores = 0
         
         for i, org in enumerate(orgs, 1):
             org_id = org.get('id')
@@ -1382,27 +1643,29 @@ is that review-only mode skips the actual ignoring of issues.
             
             print(f"\n🏢 [{i}/{total_orgs}] Processing organization: {org_name} ({org_id})")
             
-            try:
-                # Set the org_id for this iteration
-                args.org_id = org_id
-                
-                # Run the normal workflow for this organization
-                # This will be handled by the existing logic below
-                print(f"   🔄 Running ignore transfer for organization {org_name}")
-                
-                # We'll need to call the processing logic here
-                # For now, let's just show that we would process this org
-                print(f"   ⏭️  Skipping detailed processing for now (would process {org_name})")
+            # Process the organization using the existing logic
+            result = process_single_organization(snyk_api, args, org_id, org_name)
+            
+            if result['success']:
                 successful_orgs += 1
-                
-            except Exception as e:
-                print(f"   ❌ Error processing organization {org_name}: {e}")
+                total_matches += result.get('matches_processed', 0)
+                total_successful_ignores += result.get('successful_ignores', 0)
+                total_failed_ignores += result.get('failed_ignores', 0)
+                print(f"   ✅ Completed processing {org_name}")
+            else:
                 failed_orgs += 1
+                print(f"   ❌ Failed processing {org_name}: {result.get('error', 'Unknown error')}")
         
         print(f"\n📊 Group Processing Summary:")
         print(f"   🏢 Total organizations: {total_orgs}")
         print(f"   ✅ Successful: {successful_orgs}")
         print(f"   ❌ Failed: {failed_orgs}")
+        if total_matches > 0:
+            print(f"   📋 Total matches processed: {total_matches}")
+            print(f"   ✅ Total successful ignores: {total_successful_ignores}")
+            print(f"   ❌ Total failed ignores: {total_failed_ignores}")
+            if args.dry_run:
+                print(f"   🏃‍♂️ This was a DRY RUN - no actual changes were made")
         
         return  # Exit after group processing
 
