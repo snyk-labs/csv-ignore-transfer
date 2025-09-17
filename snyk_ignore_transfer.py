@@ -70,6 +70,11 @@ class SnykAPI:
             
             try:
                 if next_url:
+                    # Handle relative URLs by prepending base URL
+                    if next_url.startswith('/'):
+                        url = f"{self.base_url}{next_url}"
+                    else:
+                        url = next_url
                     response = self.session.get(url)
                 else:
                     response = self.session.get(url, params=params)
