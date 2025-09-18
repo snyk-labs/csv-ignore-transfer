@@ -112,8 +112,6 @@ class SnykAPI:
         Returns:
             List of all code issues with their complete data
         """
-        print(f"🔍 Fetching all code issues for organization {org_id}...")
-
         url = f"{self.base_url}/rest/orgs/{org_id}/issues"
         params = {
             'version': version,
@@ -167,8 +165,6 @@ class SnykAPI:
         Returns:
             List of all targets with their URLs and metadata
         """
-        print(f"🎯 Fetching all targets for organization {org_id}...")
-
         url = f"{self.base_url}/rest/orgs/{org_id}/targets"
         params = {
             'version': version,
@@ -418,8 +414,6 @@ class IssueProcessor:
         Returns:
             List of enriched issues with target information
         """
-        print(f"🔗 Enriching {len(issues)} issues with target information...")
-
         # Get all targets for the organization
         targets = self.snyk_api.get_targets_for_org(org_id)
 
@@ -437,14 +431,12 @@ class IssueProcessor:
 
         # OPTIMIZATION: Cache project details to avoid duplicate API calls
         project_cache = {}
-        api_calls_made = 0
-        api_calls_saved = 0
 
         enriched_issues = []
 
         for i, issue in enumerate(issues):
             if i % 100 == 0:  # Progress indicator
-                print(f"   📦 Processing issue {i+1}/{len(issues)} (API calls made: {api_calls_made}, saved: {api_calls_saved})")
+                print(f"   📦 Processing issue {i+1}/{len(issues)}...")
             
             # Create a copy of the issue
             enriched_issue = issue.copy()
@@ -460,7 +452,6 @@ class IssueProcessor:
                 if project_id in project_cache:
                     # Use cached data
                     target_id = project_cache[project_id]
-                    api_calls_saved += 1
                 else:
                     # Make API call and cache result
                     try:
@@ -472,7 +463,6 @@ class IssueProcessor:
                         
                         # Cache the result
                         project_cache[project_id] = target_id
-                        api_calls_made += 1
                     except Exception as e:
                         print(f"   ⚠️  Warning: Could not get target ID for project {project_id}: {e}")
                         project_cache[project_id] = None  # Cache the failure too
@@ -495,10 +485,6 @@ class IssueProcessor:
                 }
 
             enriched_issues.append(enriched_issue)
-
-        print(f"   📊 Performance: API calls made: {api_calls_made}, saved: {api_calls_saved}")
-        print(f"   📊 Cache hit rate: {(api_calls_saved / (api_calls_made + api_calls_saved) * 100):.1f}%")
-        print("   ✅ Enriched all issues with target information")
         return enriched_issues
 
     def extract_issue_key_data(self, issue: Dict) -> Dict:
@@ -565,8 +551,14 @@ class IssueProcessor:
             else:
                 print(f"   ❌ Error fetching project details for {project_id}: {project_details}")
 
+        # Extract issue_id and handle None case
+        issue_id = issue.get('id')
+        if issue_id is None:
+            print(f"   ⚠️  Warning: Issue missing ID field - skipping: {attributes.get('title', 'Unknown')[:50]}...")
+            return None  # Return None to indicate this issue should be skipped
+
         return {
-            'issue_id': issue.get('id'),
+            'issue_id': issue_id,
             'key': attributes.get('key'),
             'title': attributes.get('title'),
             'severity': attributes.get('effective_severity_level'),
@@ -700,9 +692,6 @@ class IssueProcessor:
         Returns:
             List of tuples (snyk_issue, csv_row) for matched items
         """
-        print(f"🔍 Matching {len(processed_issues)} Snyk issues with {len(csv_data)} CSV entries...")
-        print("   📋 Criteria: Branch + File name + CWE + Repository URL (+ optional line range)")
-
         # Filter CSV data to only include false positives
         false_positives = [row for row in csv_data if self._is_false_positive(row)]
         print(f"   📋 Found {len(false_positives)} false positive entries in CSV")
@@ -710,9 +699,9 @@ class IssueProcessor:
         matches = []
 
         for csv_row in false_positives:
-            # Extract CSV matching fields
-            csv_branch = csv_row.get('branch', '').strip()
-            csv_file_path = csv_row.get('file_path', '').strip()
+            # Extract CSV matching fields with safe string conversion
+            csv_branch = self._safe_str(csv_row.get('branch', ''))
+            csv_file_path = self._safe_str(csv_row.get('file_path', ''))
             csv_cwe = self._normalize_cwe(csv_row.get('cwe'))
             csv_line = self._safe_float_to_int(csv_row.get('line'))
 
@@ -726,16 +715,16 @@ class IssueProcessor:
                 continue
 
             # Extract CSV repository URL
-            csv_repo_url = csv_row.get(repo_url_field, '').strip()
+            csv_repo_url = self._safe_str(csv_row.get(repo_url_field, ''))
 
             for processed_issue in processed_issues:
                 issue_data = processed_issue['key_data']
 
-                # Extract Snyk matching fields
-                snyk_branch = issue_data.get('branch', '').strip()
-                snyk_file_path = issue_data.get('file_path', '').strip()
-                snyk_cwe = issue_data.get('cwe', '').strip()
-                snyk_target_url = (issue_data.get('target_url') or '').strip()
+                # Extract Snyk matching fields with safe string conversion
+                snyk_branch = self._safe_str(issue_data.get('branch', ''))
+                snyk_file_path = self._safe_str(issue_data.get('file_path', ''))
+                snyk_cwe = self._safe_str(issue_data.get('cwe', ''))
+                snyk_target_url = self._safe_str(issue_data.get('target_url', ''))
                 snyk_start_line = issue_data.get('start_line')
                 snyk_end_line = issue_data.get('end_line')
 
@@ -776,13 +765,27 @@ class IssueProcessor:
                 print(f"   ✅ Match found: {csv_filename} | {csv_cwe} | {csv_branch} | Repo: ✅ | Line: {line_status}")
                 break  # Move to next CSV row
 
-        print(f"   🎯 Found {len(matches)} total matches")
         return matches
+
+    def _safe_str(self, value) -> str:
+        """Safely convert any value to string, handling pandas types."""
+        if value is None:
+            return ''
+        if isinstance(value, bool):
+            return str(value).lower()
+        return str(value).strip()
 
     def _is_false_positive(self, csv_row: Dict) -> bool:
         """Check if a CSV row represents a false positive."""
-        false_p = csv_row.get('false_p', '').strip().lower()
-        return false_p in ['true', '1', 'yes', 't']
+        false_p = csv_row.get('false_p', '')
+        
+        # Handle both string and boolean values from pandas
+        if isinstance(false_p, bool):
+            return false_p
+        elif isinstance(false_p, str):
+            return false_p.strip().lower() in ['true', '1', 'yes', 't']
+        else:
+            return False
 
     def _titles_match(self, snyk_title: str, csv_title: str) -> bool:
         """
@@ -851,7 +854,7 @@ class IssueProcessor:
 
         for processed_issue, csv_row in matches:
             issue_data = processed_issue['key_data']
-            severity = issue_data.get('severity', 'Unknown')
+            severity = issue_data.get('severity') or 'Unknown'
             org_id = issue_data.get('org_id', 'Unknown')
             severity_org_counts[severity][org_id] += 1
 
@@ -866,7 +869,7 @@ class IssueProcessor:
         # Sort severities by priority (Critical, High, Medium, Low, Unknown)
         severity_order = ['critical', 'high', 'medium', 'low', 'unknown']
         sorted_severities = sorted(severity_org_counts.keys(), 
-                                 key=lambda x: severity_order.index(x.lower()) if x.lower() in severity_order else 999)
+                                 key=lambda x: severity_order.index(x.lower()) if x and x.lower() in severity_order else 999)
 
         for severity in sorted_severities:
             org_counts = severity_org_counts[severity]
@@ -892,14 +895,13 @@ class IssueProcessor:
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(report_lines))
-            print(f"   📄 Severity report saved to: {output_file}")
         except Exception as e:
             print(f"   ❌ Error saving severity report: {e}")
 
 
 def load_csv_data(csv_file: str) -> List[Dict]:
     """
-    Load data from CSV file for comparison.
+    Load data from CSV file for comparison using pandas for better large file handling.
 
     Args:
         csv_file: Path to CSV file
@@ -907,12 +909,14 @@ def load_csv_data(csv_file: str) -> List[Dict]:
     Returns:
         List of dictionaries representing CSV rows
     """
-    print(f"📄 Loading CSV data from {csv_file}...")
+    import pandas as pd
 
     try:
-        with open(csv_file, 'r', newline='', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            csv_data = list(reader)
+        # Read CSV with pandas (no field size limits)
+        df = pd.read_csv(csv_file)
+        
+        # Convert to list of dictionaries
+        csv_data = df.to_dict('records')
 
         print(f"   ✅ Loaded {len(csv_data)} rows from CSV")
         return csv_data
@@ -1041,51 +1045,56 @@ def save_matches_to_csv(matches: List[Tuple[Dict, Dict]], filename: str):
 
 
 def load_matches_from_csv(filename: str) -> List[Tuple[Dict, Dict]]:
-    """Load matches from a previously generated CSV file."""
-    import csv
+    """Load matches from a previously generated CSV file using pandas for better large file handling."""
+    import pandas as pd
 
     try:
+        print(f"📄 Loading matches from {filename} using pandas...")
+        
+        # Read CSV with pandas (no field size limits)
+        df = pd.read_csv(filename)
+        
         matches = []
+        
+        for _, row in df.iterrows():
+            # Convert pandas row to dict
+            row_dict = row.to_dict()
+            
+            # Reconstruct the processed_issue structure
+            processed_issue = {
+                'key_data': {
+                    'issue_id': row_dict.get('snyk_issue_id'),
+                    'title': row_dict.get('snyk_title'),
+                    'cwe': row_dict.get('snyk_cwe'),
+                    'severity': row_dict.get('snyk_severity'),
+                    'file_path': row_dict.get('snyk_file_path'),
+                    'start_line': int(row_dict['snyk_start_line']) if pd.notna(row_dict.get('snyk_start_line')) else None,
+                    'end_line': int(row_dict['snyk_end_line']) if pd.notna(row_dict.get('snyk_end_line')) else None,
+                    'branch': row_dict.get('snyk_branch'),
+                    'project_id': row_dict.get('snyk_project_id'),
+                    'created_at': row_dict.get('snyk_created_at'),
+                    'status': row_dict.get('snyk_status'),
+                    'org_id': None,  # Will be set from command line args
+                    'problem_id': None  # Not needed for ignoring
+                },
+                'raw_issue': {}  # Not needed for ignoring
+            }
 
-        with open(filename, 'r', newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
+            # Reconstruct the CSV row structure
+            csv_row = {
+                'title': row_dict.get('csv_title'),
+                'cwe': row_dict.get('csv_cwe'),
+                'severity': row_dict.get('csv_severity'),
+                'file_path': row_dict.get('csv_file_path'),
+                'line': row_dict.get('csv_line'),
+                'branch': row_dict.get('csv_branch'),
+                'repourl': row_dict.get('csv_repourl'),
+                'test_type': row_dict.get('csv_test_type'),
+                'date_discovered': row_dict.get('csv_date_discovered'),
+                'false_p': 'TRUE'  # Assume all loaded matches are false positives
+            }
 
-            for row in reader:
-                # Reconstruct the processed_issue structure
-                processed_issue = {
-                    'key_data': {
-                        'issue_id': row.get('snyk_issue_id'),
-                        'title': row.get('snyk_title'),
-                        'cwe': row.get('snyk_cwe'),
-                        'severity': row.get('snyk_severity'),
-                        'file_path': row.get('snyk_file_path'),
-                        'start_line': int(row['snyk_start_line']) if row.get('snyk_start_line') else None,
-                        'end_line': int(row['snyk_end_line']) if row.get('snyk_end_line') else None,
-                        'branch': row.get('snyk_branch'),
-                        'project_id': row.get('snyk_project_id'),
-                        'created_at': row.get('snyk_created_at'),
-                        'status': row.get('snyk_status'),
-                        'org_id': None,  # Will be set from command line args
-                        'problem_id': None  # Not needed for ignoring
-                    },
-                    'raw_issue': {}  # Not needed for ignoring
-                }
-
-                # Reconstruct the CSV row structure
-                csv_row = {
-                    'title': row.get('csv_title'),
-                    'cwe': row.get('csv_cwe'),
-                    'severity': row.get('csv_severity'),
-                    'file_path': row.get('csv_file_path'),
-                    'line': row.get('csv_line'),
-                    'branch': row.get('csv_branch'),
-                    'repourl': row.get('csv_repourl'),
-                    'test_type': row.get('csv_test_type'),
-                    'date_discovered': row.get('csv_date_discovered'),
-                    'false_p': 'TRUE'  # Assume all loaded matches are false positives
-                }
-
-                matches.append((processed_issue, csv_row))
+            matches.append((processed_issue, csv_row))
 
         print(f"✅ Loaded {len(matches)} matches from {filename}")
         return matches
@@ -1190,6 +1199,10 @@ def process_matches_and_ignore_policies(snyk_api: SnykAPI, matches: List[Tuple[D
         issue_title = issue_data.get('title', 'Unknown')
         cwe = issue_data.get('cwe', '')
 
+        # Handle None title
+        if issue_title is None:
+            issue_title = 'Unknown'
+        
         print(f"   [{i}/{len(matches)}] Processing issue: {issue_title[:50]}...")
 
         # Validate required IDs
@@ -1256,7 +1269,7 @@ def display_results_summary(results: Dict, dry_run: bool = False):
         print(f"   📈 Success rate: {success_rate:.1f}%")
 
 
-def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str) -> Dict:
+def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str, csv_data: List[Dict] = None, direct_ignore: bool = False) -> Dict:
     """
     Process a single organization with the current workflow.
     
@@ -1265,6 +1278,8 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
         args: Parsed command line arguments
         org_id: Organization ID to process
         org_name: Organization name for display
+        csv_data: Pre-loaded CSV data (optional, for group processing efficiency)
+        direct_ignore: If True, skip CSV generation and proceed directly to ignoring
         
     Returns:
         Dictionary with processing results
@@ -1301,17 +1316,14 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 reason=args.ignore_reason
             )
             
-            # Generate severity report if not in direct ignore mode
-            if not args.direct_ignore:
-                print(f"   📊 Generating severity and organization report")
-                severity_report_file = args.severity_report
-                if not severity_report_file:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
-                
-                processor = IssueProcessor(snyk_api)
-                processor.generate_severity_org_report(matches, severity_report_file)
-                print(f"   📄 Severity report saved to: {severity_report_file}")
+            # Generate severity report (always when ignoring issues)
+            severity_report_file = args.severity_report
+            if not severity_report_file:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+            
+            processor = IssueProcessor(snyk_api)
+            processor.generate_severity_org_report(matches, severity_report_file)
             
             return {
                 'success': True,
@@ -1321,16 +1333,16 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             }
         
         # Handle direct-ignore workflow
-        elif args.direct_ignore:
+        elif direct_ignore:
+            print("🚀 Direct ignore workflow (skipping CSV generation)")
             print(f"   📄 Using CSV file: {args.csv_file}")
             
-            # Load CSV data
-            csv_data = load_csv_data(args.csv_file)
-            if not csv_data:
-                print(f"   ❌ Error: No CSV data loaded")
-                return {'success': False, 'error': 'No CSV data loaded'}
+            # CSV data should already be loaded and passed in
+            if csv_data is None:
+                print(f"   ❌ Error: No CSV data provided for direct ignore")
+                return {'success': False, 'error': 'No CSV data provided'}
             
-            print(f"   ✅ Loaded {len(csv_data)} rows from CSV")
+            print(f"   ✅ Using pre-loaded CSV data ({len(csv_data)} rows)")
             
             # Initialize issue processor
             processor = IssueProcessor(snyk_api)
@@ -1356,13 +1368,15 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                     print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
                 
                 key_data = processor.extract_issue_key_data(issue)
+                if key_data is None:
+                    continue  # Skip issues with missing ID
+                    
                 processed_issue = {
                     'raw_issue': issue,
                     'key_data': key_data
                 }
                 processed_issues.append(processed_issue)
             
-            print(f"   ✅ Processed {len(processed_issues)} issues with detailed information")
             
             # Match issues with CSV data
             print(f"   🔍 Matching Snyk issues with CSV false positives")
@@ -1388,14 +1402,17 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             )
             
             # Generate severity report
-            print(f"   📊 Generating severity and organization report")
             severity_report_file = args.severity_report
             if not severity_report_file:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
             
             processor.generate_severity_org_report(matches, severity_report_file)
-            print(f"   📄 Severity report saved to: {severity_report_file}")
+            
+            # Print final success message
+            print(f"   - Matches processed: {len(matches)}")
+            print(f"   - Successful ignores: {results['successful_ignores']}")
+            print(f"   - Failed ignores: {results['failed_ignores']}")
             
             return {
                 'success': True,
@@ -1423,13 +1440,12 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             print(f"   🔗 Enriching issues with target information")
             enriched_issues = processor.enrich_issues_with_targets(org_id, all_issues)
             
-            # Load CSV data for comparison
-            print(f"   📄 Loading CSV data for comparison")
-            csv_data = load_csv_data(args.csv_file)
+            # CSV data should already be loaded and passed in
+            if csv_data is None:
+                print(f"   ❌ Error: No CSV data provided")
+                return {'success': False, 'error': 'No CSV data provided'}
             
-            if not csv_data:
-                print(f"   ❌ Error: No CSV data loaded")
-                return {'success': False, 'error': 'No CSV data loaded'}
+            print(f"   📄 Using pre-loaded CSV data ({len(csv_data)} rows)")
             
             # Process issues to get key data
             print(f"   🔍 Processing issue data and fetching details")
@@ -1440,13 +1456,15 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                     print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
                 
                 key_data = processor.extract_issue_key_data(issue)
+                if key_data is None:
+                    continue  # Skip issues with missing ID
+                    
                 processed_issue = {
                     'raw_issue': issue,
                     'key_data': key_data
                 }
                 processed_issues.append(processed_issue)
             
-            print(f"   ✅ Processed {len(processed_issues)} issues with detailed information")
             
             # Match issues with CSV data
             print(f"   🔍 Matching Snyk issues with CSV false positives")
@@ -1489,13 +1507,11 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 )
                 
                 # Generate severity report
-                print(f"   📊 Generating severity and organization report")
                 severity_report_file = args.severity_report
                 if not severity_report_file:
                     severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
                 
                 processor.generate_severity_org_report(matches, severity_report_file)
-                print(f"   📄 Severity report saved to: {severity_report_file}")
                 
                 return {
                     'success': True,
@@ -1634,6 +1650,15 @@ is that review-only mode skips the actual ignoring of issues.
             print("❌ Error: No organizations found in group")
             sys.exit(1)
         
+        # Load CSV data once for all organizations (if not using matches-input)
+        csv_data = None
+        if not args.matches_input:
+            print(f"📄 Loading CSV data once for all organizations...")
+            csv_data = load_csv_data(args.csv_file)
+            if not csv_data:
+                print("❌ Error: No CSV data loaded. Cannot proceed with group processing.")
+                sys.exit(1)
+        
         # Process each organization
         total_orgs = len(orgs)
         successful_orgs = 0
@@ -1649,7 +1674,7 @@ is that review-only mode skips the actual ignoring of issues.
             print(f"\n🏢 [{i}/{total_orgs}] Processing organization: {org_name} ({org_id})")
             
             # Process the organization using the existing logic
-            result = process_single_organization(snyk_api, args, org_id, org_name)
+            result = process_single_organization(snyk_api, args, org_id, org_name, csv_data, direct_ignore=False)
             
             if result['success']:
                 successful_orgs += 1
@@ -1681,7 +1706,6 @@ is that review-only mode skips the actual ignoring of issues.
             print("🚀 Direct ignore workflow (skipping CSV generation)")
         else:
             print("🔄 Loading matches from CSV workflow")
-        print(f"   📄 Loading matches from: {args.matches_input}")
 
         matches = load_matches_from_csv(args.matches_input)
         if not matches:
@@ -1729,238 +1753,50 @@ is that review-only mode skips the actual ignoring of issues.
 
     # Workflow 1.5: Direct ignore workflow (skip CSV generation)
     if args.direct_ignore:
-        print("🚀 Direct ignore workflow (skipping CSV generation)")
-        print(f"   📄 Using CSV file: {args.csv_file}")
-
         # Load CSV data
         csv_data = load_csv_data(args.csv_file)
         if not csv_data:
             print("❌ Error: No CSV data loaded. Cannot proceed with direct ignore.")
             sys.exit(1)
-
-        print(f"   ✅ Loaded {len(csv_data)} rows from CSV")
-
-        # Initialize issue processor
-        processor = IssueProcessor(snyk_api)
-
-        # Get all code issues for the organization
-        print(f"\n🚀 Fetching all code issues for organization {args.org_id}")
-        all_issues = snyk_api.get_all_code_issues(args.org_id)
-
-        if not all_issues:
-            print("ℹ️  No code issues found in organization")
-            return
-
-        # Enrich issues with target information
-        print("\n🔗 Enriching issues with target information")
-        enriched_issues = processor.enrich_issues_with_targets(args.org_id, all_issues)
-
-        # Process issues to get key data
-        print("\n🔍 Processing issue data and fetching details")
-        processed_issues = []
-
-        for i, issue in enumerate(enriched_issues, 1):
-            if i % 100 == 0 or i == 1:
-                print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
-
-            key_data = processor.extract_issue_key_data(issue)
-            processed_issue = {
-                'raw_issue': issue,
-                'key_data': key_data
-            }
-            processed_issues.append(processed_issue)
-
-        print(f"   ✅ Processed {len(processed_issues)} issues with detailed information")
-
-        # Match issues with CSV data
-        print("\n🔍 Matching Snyk issues with CSV false positives")
-        matches = processor.match_issues_with_csv(
-            processed_issues=processed_issues,
-            csv_data=csv_data,
-            repo_url_field=args.repo_url_field
-        )
-
-        if not matches:
-            print("ℹ️  No matches found between Snyk issues and CSV false positives")
-            print(f"🎉 Process completed - {len(enriched_issues)} issues processed, but no matches to ignore")
-            return
-
-        print(f"   🎯 Found {len(matches)} total matches")
-
-        # Process matches and ignore issues
-        print(f"\n🚫 Processing matches and ignoring issues")
-        results = process_matches_and_ignore_policies(
-            snyk_api=snyk_api,
-            matches=matches,
-            dry_run=args.dry_run,
-            reason=args.ignore_reason
-        )
-
-        # Display results summary
-        display_results_summary(results, dry_run=args.dry_run)
-
-        # Generate severity report
-        print(f"\n📊 Generating severity and organization report")
-        severity_report_file = args.severity_report
-        if not severity_report_file:
-            # Generate default filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            severity_report_file = f"snyk_severity_report_{timestamp}.txt"
         
-        processor.generate_severity_org_report(matches, severity_report_file)
-        print(f"   📄 Severity report saved to: {severity_report_file}")
-
-        print(f"\n🎉 Snyk direct ignore processing completed successfully!")
-        print(f"   - Total issues processed: {len(enriched_issues)}")
-        print(f"   - CSV entries processed: {len(csv_data)}")
-        print(f"   - Matches found: {len(matches)}")
-        print(f"   - Severity report saved to: {severity_report_file}")
-        if args.dry_run:
-            print(f"   - This was a DRY RUN - no actual changes were made")
-        else:
-            print(f"   - Issues successfully ignored: {results['successful_ignores']}")
+        # Use process_single_organization with direct_ignore=True
+        result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=True)
+        
+        if not result['success']:
+            print(f"❌ Error: {result.get('error', 'Unknown error')}")
+            sys.exit(1)
+        
         return
 
     # Workflow 1: Normal matching workflow
     print("🔍 Standard matching workflow")
-
-    # Initialize issue processor
-    processor = IssueProcessor(snyk_api)
-
-    # Step 1: Get all code issues for the organization
-    print(f"\n🚀 Step 1: Fetching all code issues for organization {args.org_id}")
-    all_issues = snyk_api.get_all_code_issues(args.org_id)
-
-    if not all_issues:
-        print("ℹ️  No code issues found in organization")
-        return
-
-    # Step 2: Enriching issues with target information (preserving attributes.url)
-    print("\n🔗 Step 2: Enriching issues with target information")
-    enriched_issues = processor.enrich_issues_with_targets(args.org_id, all_issues)
-
-    # Step 3: Load CSV data for comparison
-    print("\n📄 Step 3: Loading CSV data for comparison")
+    
+    # Load CSV data once
+    print(f"\n📄 Loading CSV data for comparison")
     csv_data = load_csv_data(args.csv_file)
-
+    
     if not csv_data:
         print("❌ Error: No CSV data loaded. Cannot proceed with matching.")
         sys.exit(1)
-
-    # Step 4: Extract key data from issues for easier processing (includes fetching issue details and project details)
-    print("\n🔍 Step 4: Processing issue data and fetching details (this may take a while...)")
-    print("   📋 Fetching issue details (file paths, line numbers) and project details (branch info)")
-    processed_issues = []
-
-    for i, issue in enumerate(enriched_issues, 1):
-        if i % 100 == 0 or i == 1:
-            print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
-
-        key_data = processor.extract_issue_key_data(issue)
-        processed_issue = {
-            'raw_issue': issue,
-            'key_data': key_data
-        }
-        processed_issues.append(processed_issue)
-
-    print(f"   ✅ Processed {len(processed_issues)} issues with detailed information (file paths, lines, branches)")
-
-    # Display sample data if verbose
-    if args.verbose and processed_issues:
-        print("\n📋 Sample processed issue data:")
-        sample = processed_issues[0]['key_data']
-        for key, value in sample.items():
-            print(f"   {key}: {value}")
-
-    # Save to JSON if requested (before matching)
-    if args.output_json:
-        print("\n💾 Saving issues data to JSON file")
-        save_issues_to_json([pi['key_data'] for pi in processed_issues], args.output_json)
-
-    # Step 5: Match issues with CSV data using new criteria
-    print("\n🔍 Step 5: Matching Snyk issues with CSV false positives")
-    matches = processor.match_issues_with_csv(
-        processed_issues=processed_issues,
-        csv_data=csv_data,
-        repo_url_field=args.repo_url_field
-    )
-
-    if not matches:
-        print("ℹ️  No matches found between Snyk issues and CSV false positives")
-        print(f"🎉 Process completed - {len(enriched_issues)} issues processed, but no matches to ignore")
-        return
-
-    # Display some match details if verbose
-    if args.verbose:
-        print(f"\n📋 Sample matches found:")
-        for i, (processed_issue, csv_row) in enumerate(matches[:3], 1):
-            issue_data = processed_issue['key_data']
-            print(f"   {i}. Snyk Issue: {issue_data.get('title', 'Unknown')[:60]}...")
-            print(f"      File: {processor._extract_filename(issue_data.get('file_path', 'N/A'))}")
-            print(f"      CWE: {issue_data.get('cwe')} | Branch: {issue_data.get('branch')}")
-            print(f"      Lines: {issue_data.get('start_line')}-{issue_data.get('end_line')}")
-            print(f"   {i}. CSV Match: {csv_row.get('title', 'Unknown')[:60]}...")
-            print(f"      File: {processor._extract_filename(csv_row.get('file_path', 'N/A'))}")
-            print(f"      CWE: {processor._normalize_cwe(csv_row.get('cwe'))} | Branch: {csv_row.get('branch')}")
-            print(f"      Line: {csv_row.get('line')}")
-            print()
-
-    # Step 6: Save matches to CSV for review
-    matches_csv_file = args.matches_csv
-    if not matches_csv_file:
-        # Generate default filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        matches_csv_file = f"snyk_matches_{timestamp}.csv"
-
-    print(f"\n📊 Step 6: Saving matches to CSV for review")
-    save_matches_to_csv(matches, matches_csv_file)
-
-    # Step 7: Process matches and ignore issues (unless review-only mode)
-    if args.review_only:
-        print(f"\n📋 Review-only mode: Matches saved to {matches_csv_file} for review")
-        print(f"   - Review the matches and run without --review-only to proceed with ignoring")
-    else:
-        print(f"\n🚫 Step 7: Processing matches and ignoring issues")
-        results = process_matches_and_ignore_policies(
-            snyk_api=snyk_api,
-            matches=matches,
-            dry_run=args.dry_run,
-            reason=args.ignore_reason
-        )
-
-        # Display results summary
-        display_results_summary(results, dry_run=args.dry_run)
-
-        # Step 8: Generate severity report (always when ignoring issues)
-        print(f"\n📊 Step 8: Generating severity and organization report")
-        severity_report_file = args.severity_report
-        if not severity_report_file:
-            # Generate default filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            severity_report_file = f"snyk_severity_report_{timestamp}.txt"
-        
-        processor.generate_severity_org_report(matches, severity_report_file)
-        print(f"   📄 Severity report saved to: {severity_report_file}")
-
-        print(f"\n🎉 Snyk ignore transfer completed successfully!")
-        print(f"   - Total issues processed: {len(enriched_issues)}")
-        print(f"   - CSV entries processed: {len(csv_data)}")
-        print(f"   - Matches found: {len(matches)}")
-        print(f"   - Matches saved to: {matches_csv_file}")
-        print(f"   - Severity report saved to: {severity_report_file}")
-        if args.dry_run:
-            print(f"   - This was a DRY RUN - no actual changes were made")
-        else:
-            print(f"   - Issues successfully ignored: {results['successful_ignores']}")
-
-    print(f"\n💡 Next steps:")
-    if args.review_only:
-        print(f"   1. Review matches in: {matches_csv_file}")
-        print(f"   2. Run without --review-only to proceed with ignoring")
-    else:
-        print(f"   1. Review ignore results")
-        print(f"   2. Check Snyk console for ignored issues")
-        print(f"   3. Review severity report: {severity_report_file}")
+    
+    # Use process_single_organization for consistency
+    result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=False)
+    
+    if not result['success']:
+        print(f"❌ Error: {result.get('error', 'Unknown error')}")
+        sys.exit(1)
+    
+    # For normal workflow, we need to handle additional features like saving matches to CSV
+    # and review-only mode. Let's get the matches that were processed.
+    print(f"\n📊 Processing completed successfully!")
+    print(f"   - Matches processed: {result.get('matches_processed', 0)}")
+    print(f"   - Successful ignores: {result.get('successful_ignores', 0)}")
+    print(f"   - Failed ignores: {result.get('failed_ignores', 0)}")
+    
+    if args.dry_run:
+        print(f"   - This was a DRY RUN - no actual changes were made")
+    
+    return
 
 
 if __name__ == '__main__':
