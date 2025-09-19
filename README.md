@@ -160,7 +160,7 @@ requirements.txt             # Python dependencies
 
 The tool matches Snyk issues with CSV data based on:
 
-1. **Title** - Issue title must contain CSV title/vulnerability text
+1. **Line Number** - Must match line number or be within the range
 2. **Repository URL** - Must match exactly (if provided in CSV)
 3. **CWE** - Must match exactly (normalized format)
 4. **False positive check** - Skips CSV rows marked as false positives
@@ -229,22 +229,6 @@ Use `--verbose` flag for detailed debugging information:
 ```bash
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --verbose
 ```
-
-## 📈 Performance
-
-The tool is optimized for performance:
-
-- **Pagination handling** - Efficiently processes large datasets
-- **Caching** - Caches target information to reduce API calls
-- **Batch processing** - Processes multiple issues efficiently
-- **Progress tracking** - Shows progress for long-running operations
-
-## 🔒 Security
-
-- **Token security** - Uses environment variables for sensitive data
-- **Input validation** - Sanitizes all inputs to prevent injection
-- **Error handling** - Prevents sensitive data from being logged
-- **Dry run mode** - Test operations safely without making changes
 
 ## 📞 Support
 

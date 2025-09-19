@@ -767,6 +767,178 @@ class IssueProcessor:
 
         return matches
 
+    def _normalize_cwe_df(self, series):
+        """Vectorized normalization of CWE values for pandas Series, outputs 'CWE-<int>' or ''"""
+        import pandas as pd
+        def norm_one(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return ''
+            try:
+                # Handles 'CWE-79', '79', '79.0'
+                return f"CWE-{int(float(str(v).strip().replace('CWE-', '')))}"
+            except Exception:
+                v2 = str(v).strip().upper()
+                return v2 if v2.startswith('CWE-') else ''
+        return series.apply(norm_one)
+
+    def _normalize_repo_url(self, url: Optional[str]) -> str:
+        """Normalize repository URL for consistent matching."""
+        if not url:
+            return ''
+        try:
+            url = str(url).strip().lower()
+        except Exception:
+            return ''
+        # Standardize protocol and strip common prefixes/suffixes
+        if url.startswith('http://'):
+            url = 'https://' + url[len('http://'):]
+        url = url.rstrip('/')
+        if url.startswith('www.'):
+            url = url[4:]
+        return url
+
+    def match_issues_with_csv_df(self, processed_issues: List[Dict], csv_data: List[Dict], repo_url_field: str = 'repourl') -> List[Tuple[Dict, Dict]]:
+        """
+        Fast DataFrame-based matcher using pandas. Joins on branch, filename, cwe, and repo URL.
+        
+        This is an alternative to the traditional nested loop approach that should be significantly
+        faster for large datasets. Uses the same matching criteria as match_issues_with_csv.
+        """
+        import pandas as pd
+
+        # 1) Build CSV DataFrame and keep only false positives
+        df_csv_raw = pd.DataFrame(csv_data)
+        if df_csv_raw.empty:
+            return []
+
+        def is_fp(row):
+            v = str(row.get('false_p', '')).strip().upper()
+            return v in ('TRUE', 'YES', 'Y', '1')
+        df_csv = df_csv_raw[df_csv_raw.apply(is_fp, axis=1)].copy()
+        if df_csv.empty:
+            return []
+
+        # Normalize CSV columns used for keys
+        for col in ['branch', 'file_path']:
+            if col in df_csv.columns:
+                df_csv[col] = df_csv[col].astype(str).str.strip()
+            else:
+                df_csv[col] = ''
+        df_csv['filename'] = df_csv['file_path'].str.replace('\\\\', '/', regex=True).str.split('/').str[-1].str.strip()
+        df_csv['cwe'] = self._normalize_cwe_df(df_csv['cwe'] if 'cwe' in df_csv.columns else pd.Series([]))
+        df_csv['repourl'] = df_csv.get(repo_url_field) if repo_url_field in df_csv.columns else ''
+        if isinstance(df_csv['repourl'], pd.Series):
+            df_csv['repourl'] = df_csv['repourl'].astype(str).apply(self._normalize_repo_url)
+        else:
+            df_csv['repourl'] = ''
+
+        # Optional line as numeric
+        def to_int_safe(x):
+            try:
+                return int(float(x))
+            except Exception:
+                return pd.NA
+        df_csv['csv_line'] = df_csv['line'].apply(to_int_safe) if 'line' in df_csv.columns else pd.Series([pd.NA] * len(df_csv))
+
+        # 2) Build Snyk DataFrame from processed_issues['key_data']
+        key_rows = []
+        for it in processed_issues:
+            kd = it.get('key_data', {})
+            fp = kd.get('file_path') or ''
+            filename = fp.replace('\\\\', '/').split('/')[-1].strip() if fp else ''
+            key_rows.append({
+                'issue_id': kd.get('issue_id'),
+                'title': kd.get('title'),
+                'cwe': kd.get('cwe'),
+                'severity': kd.get('severity'),
+                'file_path': fp,
+                'filename': filename,
+                'start_line': kd.get('start_line'),
+                'end_line': kd.get('end_line'),
+                'branch': kd.get('branch'),
+                'project_id': kd.get('project_id'),
+                'created_at': kd.get('created_at'),
+                'status': kd.get('status'),
+                'org_id': kd.get('org_id'),
+                'target_url': self._normalize_repo_url(kd.get('target_url')),
+            })
+        df_issues = pd.DataFrame(key_rows)
+        if df_issues.empty:
+            return []
+
+        # Normalize keys in Snyk DF
+        for col in ['branch', 'filename', 'cwe']:
+            if col in df_issues.columns:
+                df_issues[col] = df_issues[col].astype(str).str.strip()
+        df_issues['target_url'] = df_issues['target_url'].astype(str)
+
+        # 3) Merge on exact keys (same criteria as traditional matcher)
+        merged = df_csv.merge(
+            df_issues,
+            how='inner',
+            left_on=['branch', 'filename', 'cwe', 'repourl'],
+            right_on=['branch', 'filename', 'cwe', 'target_url'],
+            suffixes=('_csv', '_snyk')
+        )
+        if merged.empty:
+            return []
+
+        # 4) Vectorized optional line-range filter (same logic as traditional matcher)
+        def as_Int64(s):
+            try:
+                return s.astype('Int64')
+            except Exception:
+                return pd.Series([pd.NA] * len(s), dtype='Int64')
+        start_i = as_Int64(merged['start_line'])
+        end_i = as_Int64(merged['end_line'])
+        line_i = as_Int64(merged['csv_line'])
+        in_range = line_i.notna() & start_i.notna() & end_i.notna() & (start_i <= line_i) & (line_i <= end_i)
+        keep = in_range | (~line_i.notna())  # Keep matches with or without line range
+        merged = merged[keep].copy()
+        if merged.empty:
+            return []
+
+        # 5) Rehydrate matches (convert back to expected format)
+        by_issue_id = {it['key_data'].get('issue_id'): it for it in processed_issues}
+        matches: List[Tuple[Dict, Dict]] = []
+        for _, r in merged.iterrows():
+            issue_id = r.get('issue_id')
+            processed_issue = by_issue_id.get(issue_id)
+            if processed_issue is None:
+                # Fallback minimal structure (shouldn't happen, but safety first)
+                processed_issue = {
+                    'key_data': {
+                        'issue_id': r.get('issue_id'),
+                        'title': r.get('title_snyk') or r.get('title'),
+                        'cwe': r.get('cwe'),
+                        'severity': r.get('severity_snyk') or r.get('severity'),
+                        'file_path': r.get('file_path_snyk') or r.get('file_path'),
+                        'start_line': r.get('start_line'),
+                        'end_line': r.get('end_line'),
+                        'branch': r.get('branch'),
+                        'project_id': r.get('project_id'),
+                        'created_at': r.get('created_at'),
+                        'status': r.get('status'),
+                        'org_id': r.get('org_id'),
+                        'target_url': r.get('target_url'),
+                    }
+                }
+            csv_row = {
+                'title': r.get('title_csv') or r.get('title'),
+                'cwe': r.get('cwe'),
+                'severity': r.get('severity_csv') or r.get('severity'),
+                'file_path': r.get('file_path_csv') or r.get('file_path'),
+                'line': r.get('csv_line'),
+                'branch': r.get('branch'),
+                'repourl': r.get('repourl'),
+                'test_type': r.get('test_type'),
+                'date_discovered': r.get('date_discovered'),
+                'false_p': 'TRUE'
+            }
+            matches.append((processed_issue, csv_row))
+
+        return matches
+
     def _safe_str(self, value) -> str:
         """Safely convert any value to string, handling pandas types."""
         if value is None:
@@ -1587,6 +1759,8 @@ is that review-only mode skips the actual ignoring of issues.
                        help='Skip CSV generation and proceed directly to ignoring issues (uses --csv-file)')
     parser.add_argument('--severity-report',
                        help='Generate severity and organization report to specified file (optional)')
+    parser.add_argument('--df-match', action='store_true',
+                       help='Use pandas DataFrame-based matching for improved performance with large datasets')
 
     args = parser.parse_args()
 
@@ -1638,6 +1812,12 @@ is that review-only mode skips the actual ignoring of issues.
     # Initialize Snyk API client
     print(f"🔧 Initializing Snyk API client (region: {args.snyk_region})...")
     snyk_api = SnykAPI(snyk_token, args.snyk_region)
+
+    # Switch to DataFrame-based matching if requested
+    if args.df_match:
+        print("⚡ Using DataFrame-based matcher (--df-match) for improved performance")
+        # Temporarily replace the traditional matcher with the DataFrame version
+        IssueProcessor.match_issues_with_csv = IssueProcessor.match_issues_with_csv_df
 
     # Handle group processing
     if args.group_id:
