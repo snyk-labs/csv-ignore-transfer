@@ -1574,12 +1574,14 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             )
             
             # Generate severity report
+            print(f"   📊 Generating severity and organization report")
             severity_report_file = args.severity_report
             if not severity_report_file:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
             
             processor.generate_severity_org_report(matches, severity_report_file)
+            print(f"   📄 Severity report saved to: {severity_report_file}")
             
             # Print final success message
             print(f"   - Matches processed: {len(matches)}")
@@ -1911,17 +1913,16 @@ is that review-only mode skips the actual ignoring of issues.
         display_results_summary(results, dry_run=args.dry_run)
 
         # Generate severity report (always when ignoring issues)
-        if not args.direct_ignore:  # Only generate report if not in direct ignore mode
-            print(f"\n📊 Generating severity and organization report")
-            severity_report_file = args.severity_report
-            if not severity_report_file:
-                # Generate default filename with timestamp
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                severity_report_file = f"snyk_severity_report_{timestamp}.txt"
-            
-            processor = IssueProcessor(snyk_api)
-            processor.generate_severity_org_report(matches, severity_report_file)
-            print(f"   📄 Severity report saved to: {severity_report_file}")
+        print(f"\n📊 Generating severity and organization report")
+        severity_report_file = args.severity_report
+        if not severity_report_file:
+            # Generate default filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            severity_report_file = f"snyk_severity_report_{timestamp}.txt"
+        
+        processor = IssueProcessor(snyk_api)
+        processor.generate_severity_org_report(matches, severity_report_file)
+        print(f"   📄 Severity report saved to: {severity_report_file}")
 
         print("\n🎉 Snyk ignore processing completed successfully!")
         print(f"   - Matches processed: {len(matches)}")
@@ -1945,6 +1946,17 @@ is that review-only mode skips the actual ignoring of issues.
         if not result['success']:
             print(f"❌ Error: {result.get('error', 'Unknown error')}")
             sys.exit(1)
+        
+        print("\n🎉 Direct ignore processing completed successfully!")
+        print(f"   - Matches processed: {result.get('matches_processed', 0)}")
+        print(f"   - Successful ignores: {result.get('successful_ignores', 0)}")
+        print(f"   - Failed ignores: {result.get('failed_ignores', 0)}")
+        
+        if args.dry_run:
+            print("   - This was a DRY RUN - no actual changes were made")
+        
+        # Note: Severity report is generated within process_single_organization for direct_ignore
+        print("   📄 Severity report has been generated and saved")
         
         return
 
