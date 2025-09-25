@@ -19,6 +19,32 @@ import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+# Constants for better maintainability
+PROGRESS_BATCH_SIZE = 100  # Progress update frequency
+API_BATCH_SIZE = 100      # API pagination batch size
+TITLE_TRUNCATE_LENGTH = 100  # Max length for titles in reports
+ISSUE_TITLE_DISPLAY_LENGTH = 50  # Max length for issue titles in progress
+
+
+class Config:
+    """Configuration class for centralized settings management."""
+    
+    # API Settings
+    DEFAULT_API_VERSION = "2024-10-15"
+    ISSUE_DETAIL_API_VERSION = "2024-10-14~experimental"
+    POLICY_API_VERSION = "2024-10-15"
+    
+    # Matching Settings
+    SIMILARITY_THRESHOLD = 0.6  # Jaccard similarity threshold for title matching
+    
+    # Report Settings
+    SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'unknown']
+    
+    # Default Values
+    DEFAULT_REGION = "SNYK-US-01"
+    DEFAULT_IGNORE_REASON = "False positive identified via CSV analysis"
+    DEFAULT_REPO_URL_FIELD = "repourl"
+
 
 class SnykAPI:
     """Snyk API client for managing issues and ignores."""
@@ -64,7 +90,7 @@ class SnykAPI:
             else:
                 url = f"{self.base_url}/rest/groups/{group_id}/orgs"
                 params = {
-                    'limit': 100,
+                    'limit': API_BATCH_SIZE,
                     'version': version
                 }
             
@@ -116,7 +142,7 @@ class SnykAPI:
         params = {
             'version': version,
             'type': 'code',
-            'limit': 100,
+            'limit': API_BATCH_SIZE,
             'status': 'open'
         }
 
@@ -403,6 +429,36 @@ class IssueProcessor:
         self.targets_cache = {}
         self.cwe_mapping = self._build_cwe_mapping()
 
+    @staticmethod
+    def create_processing_summary(matches: List, results: Dict = None, is_group: bool = False, 
+                                group_stats: Dict = None) -> Dict:
+        """
+        Create a standardized processing summary dictionary.
+        
+        Args:
+            matches: List of matches processed
+            results: Results dictionary from ignore processing (optional)
+            is_group: Whether this is for group processing
+            group_stats: Group-level statistics (for group processing)
+            
+        Returns:
+            Dictionary with processing summary
+        """
+        summary = {
+            'total_matches': len(matches) if matches else 0,
+            'successful_ignores': results.get('successful_ignores', 0) if results else 0,
+            'failed_ignores': results.get('failed_ignores', 0) if results else 0
+        }
+        
+        if is_group and group_stats:
+            summary.update({
+                'total_orgs': group_stats.get('total_orgs', 0),
+                'successful_orgs': group_stats.get('successful_orgs', 0),
+                'failed_orgs': group_stats.get('failed_orgs', 0)
+            })
+            
+        return summary
+
     def enrich_issues_with_targets(self, org_id: str, issues: List[Dict]) -> List[Dict]:
         """
         Enrich issues with target information including attributes.url.
@@ -435,7 +491,7 @@ class IssueProcessor:
         enriched_issues = []
 
         for i, issue in enumerate(issues):
-            if i % 100 == 0:  # Progress indicator
+            if i % PROGRESS_BATCH_SIZE == 0:  # Progress indicator
                 print(f"   📦 Processing issue {i+1}/{len(issues)}...")
             
             # Create a copy of the issue
@@ -554,7 +610,7 @@ class IssueProcessor:
         # Extract issue_id and handle None case
         issue_id = issue.get('id')
         if issue_id is None:
-            print(f"   ⚠️  Warning: Issue missing ID field - skipping: {attributes.get('title', 'Unknown')[:50]}...")
+            print(f"   ⚠️  Warning: Issue missing ID field - skipping: {attributes.get('title', 'Unknown')[:ISSUE_TITLE_DISPLAY_LENGTH]}...")
             return None  # Return None to indicate this issue should be skipped
 
         return {
@@ -987,9 +1043,9 @@ class IssueProcessor:
         intersection = snyk_words & csv_words
         union = snyk_words | csv_words
 
-        # Jaccard similarity - at least 60% overlap
+        # Jaccard similarity using config threshold
         similarity = len(intersection) / len(union) if union else 0
-        return similarity >= 0.6
+        return similarity >= Config.SIMILARITY_THRESHOLD
 
     def _repo_urls_match(self, snyk_url: Optional[str], csv_url: str) -> bool:
         """Check if repository URLs match."""
@@ -1009,13 +1065,16 @@ class IssueProcessor:
 
         return normalize_url(snyk_url) == normalize_url(csv_url)
 
-    def generate_severity_org_report(self, matches: List[Tuple[Dict, Dict]], output_file: str):
+    def generate_severity_org_report(self, matches: List[Tuple[Dict, Dict]], output_file: str, 
+                                     is_group_processing: bool = False, processing_summary: Dict = None):
         """
         Generate a severity and organization report for the matches.
 
         Args:
             matches: List of (processed_issue, csv_row) tuples
             output_file: Path to output file for the report
+            is_group_processing: True if processing multiple organizations in a group
+            processing_summary: Dictionary with processing statistics (orgs, successful_ignores, etc.)
         """
         from collections import defaultdict
         from datetime import datetime
@@ -1030,18 +1089,51 @@ class IssueProcessor:
             org_id = issue_data.get('org_id', 'Unknown')
             severity_org_counts[severity][org_id] += 1
 
-        # Generate report content
+        # Generate report content with dynamic title
         report_lines = []
-        report_lines.append("SNYK IGNORE TRANSFER - SEVERITY AND ORGANIZATION REPORT")
-        report_lines.append("=" * 60)
+        if is_group_processing:
+            title = "SNYK IGNORE TRANSFER - SEVERITY AND GROUP REPORT"
+        else:
+            title = "SNYK IGNORE TRANSFER - SEVERITY AND ORGANIZATION REPORT"
+        
+        report_lines.append(title)
+        report_lines.append("=" * len(title))
         report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append(f"Total Issues to be Ignored: {total_issues}")
+        
+        # Add processing summary if provided
+        if processing_summary:
+            report_lines.append("")
+            report_lines.append("PROCESSING SUMMARY")
+            report_lines.append("=" * 18)
+            
+            if is_group_processing:
+                total_orgs = processing_summary.get('total_orgs', 0)
+                successful_orgs = processing_summary.get('successful_orgs', 0)
+                failed_orgs = processing_summary.get('failed_orgs', 0)
+                report_lines.append(f"Total organizations processed: {total_orgs}")
+                report_lines.append(f"Successful organizations: {successful_orgs}")
+                report_lines.append(f"Failed organizations: {failed_orgs}")
+            else:
+                report_lines.append("Single organization processing")
+            
+            total_matches = processing_summary.get('total_matches', 0)
+            successful_ignores = processing_summary.get('successful_ignores', 0)
+            failed_ignores = processing_summary.get('failed_ignores', 0)
+            
+            report_lines.append(f"Total matches processed: {total_matches}")
+            report_lines.append(f"Successful ignores: {successful_ignores}")
+            report_lines.append(f"Failed ignores: {failed_ignores}")
+            
+            if successful_ignores + failed_ignores > 0:
+                success_rate = (successful_ignores / (successful_ignores + failed_ignores)) * 100
+                report_lines.append(f"Success rate: {success_rate:.1f}%")
+        
         report_lines.append("")
 
-        # Sort severities by priority (Critical, High, Medium, Low, Unknown)
-        severity_order = ['critical', 'high', 'medium', 'low', 'unknown']
+        # Sort severities by priority using config
         sorted_severities = sorted(severity_org_counts.keys(), 
-                                 key=lambda x: severity_order.index(x.lower()) if x and x.lower() in severity_order else 999)
+                                 key=lambda x: Config.SEVERITY_ORDER.index(x.lower()) if x and x.lower() in Config.SEVERITY_ORDER else 999)
 
         for severity in sorted_severities:
             org_counts = severity_org_counts[severity]
@@ -1279,66 +1371,6 @@ def load_matches_from_csv(filename: str) -> List[Tuple[Dict, Dict]]:
         return []
 
 
-# V1 IGNORE FUNCTION - COMMENTED OUT FOR POLICY-BASED APPROACH
-# def process_matches_and_ignore(snyk_api: SnykAPI, matches: List[Tuple[Dict, Dict]],
-#                               dry_run: bool = False, reason: str = "False positive identified via CSV analysis") -> Dict:
-#     """
-#     Process matches and ignore issues in Snyk.
-# 
-#     Args:
-#         snyk_api: Snyk API client
-#         matches: List of (snyk_issue, csv_row) tuples
-#         dry_run: If True, simulate actions without making changes
-#         reason: Reason for ignoring the issues
-# 
-#     Returns:
-#         Dictionary with success/failure counts
-#     """
-#     print(f"🎯 Processing {len(matches)} matched issues for ignoring...")
-# 
-#     results = {
-#         'total_matches': len(matches),
-#         'successful_ignores': 0,
-#         'failed_ignores': 0,
-#         'skipped': 0
-#     }
-# 
-#     for i, (processed_issue, csv_row) in enumerate(matches, 1):
-#         issue_data = processed_issue['key_data']
-# 
-#         org_id = issue_data.get('org_id')
-#         project_id = issue_data.get('project_id')
-#         issue_id = issue_data.get('issue_id')
-# 
-#         print(f"   [{i}/{len(matches)}] Processing issue: {issue_data.get('title', 'Unknown')[:50]}...")
-# 
-#         # Validate required IDs
-#         if not all([org_id, project_id, issue_id]):
-#             print(f"      ⚠️  Skipping: Missing required IDs (org: {org_id}, project: {project_id}, issue: {issue_id})")
-#             results['skipped'] += 1
-#             continue
-# 
-#         # Build detailed reason with CSV context
-#         detailed_reason = f"{reason}. CWE: {csv_row.get('cwe', 'N/A')}, CSV Title: {csv_row.get('title', 'N/A')[:100]}"
-# 
-#         # Attempt to ignore the issue
-#         success = snyk_api.ignore_issue(
-#             org_id=org_id,
-#             project_id=project_id,
-#             issue_id=issue_id,
-#             reason=detailed_reason,
-#             reason_type="not-vulnerable",
-#             disregard_if_fixable=False,
-#             expires="",
-#             dry_run=dry_run
-#         )
-# 
-#         if success:
-#             results['successful_ignores'] += 1
-#         else:
-#             results['failed_ignores'] += 1
-# 
-#     return results
 
 
 def process_matches_and_ignore_policies(snyk_api: SnykAPI, matches: List[Tuple[Dict, Dict]],
@@ -1375,7 +1407,7 @@ def process_matches_and_ignore_policies(snyk_api: SnykAPI, matches: List[Tuple[D
         if issue_title is None:
             issue_title = 'Unknown'
         
-        print(f"   [{i}/{len(matches)}] Processing issue: {issue_title[:50]}...")
+        print(f"   [{i}/{len(matches)}] Processing issue: {issue_title[:ISSUE_TITLE_DISPLAY_LENGTH]}...")
 
         # Validate required IDs
         if not org_id or not issue_id:
@@ -1405,7 +1437,7 @@ def process_matches_and_ignore_policies(snyk_api: SnykAPI, matches: List[Tuple[D
 
         # Build detailed reason with CSV context
         csv_title = csv_row.get('title', 'Unknown')
-        detailed_reason = f"{reason}. CWE: {cwe}, CSV Title: {csv_title[:100]}"
+        detailed_reason = f"{reason}. CWE: {cwe}, CSV Title: {csv_title[:TITLE_TRUNCATE_LENGTH]}"
 
         # Create ignore policy
         success = snyk_api.create_ignore_policy(
@@ -1441,7 +1473,7 @@ def display_results_summary(results: Dict, dry_run: bool = False):
         print(f"   📈 Success rate: {success_rate:.1f}%")
 
 
-def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str, csv_data: List[Dict] = None, direct_ignore: bool = False) -> Dict:
+def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str, csv_data: List[Dict] = None, direct_ignore: bool = False, skip_individual_report: bool = False) -> Dict:
     """
     Process a single organization with the current workflow.
     
@@ -1488,20 +1520,27 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 reason=args.ignore_reason
             )
             
-            # Generate severity report (always when ignoring issues)
-            severity_report_file = args.severity_report
-            if not severity_report_file:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
-            
-            processor = IssueProcessor(snyk_api)
-            processor.generate_severity_org_report(matches, severity_report_file)
+            # Generate severity report (always when ignoring issues, unless skipping for group processing)
+            if not skip_individual_report:
+                severity_report_file = args.severity_report
+                if not severity_report_file:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                
+                # Create processing summary for single org
+                processing_summary = IssueProcessor.create_processing_summary(matches, results)
+                
+                processor = IssueProcessor(snyk_api)
+                processor.generate_severity_org_report(matches, severity_report_file, 
+                                                     is_group_processing=False, 
+                                                     processing_summary=processing_summary)
             
             return {
                 'success': True,
                 'matches_processed': len(matches),
                 'successful_ignores': results['successful_ignores'],
-                'failed_ignores': results['failed_ignores']
+                'failed_ignores': results['failed_ignores'],
+                'matches': matches if skip_individual_report else None
             }
         
         # Handle direct-ignore workflow
@@ -1536,7 +1575,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             processed_issues = []
             
             for i, issue in enumerate(enriched_issues, 1):
-                if i % 100 == 0 or i == 1:
+                if i % PROGRESS_BATCH_SIZE == 0 or i == 1:
                     print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
                 
                 key_data = processor.extract_issue_key_data(issue)
@@ -1573,15 +1612,21 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 reason=args.ignore_reason
             )
             
-            # Generate severity report
-            print(f"   📊 Generating severity and organization report")
-            severity_report_file = args.severity_report
-            if not severity_report_file:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
-            
-            processor.generate_severity_org_report(matches, severity_report_file)
-            print(f"   📄 Severity report saved to: {severity_report_file}")
+            # Generate severity report (unless skipping for group processing)
+            if not skip_individual_report:
+                print(f"   📊 Generating severity and organization report")
+                severity_report_file = args.severity_report
+                if not severity_report_file:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                
+                # Create processing summary for single org
+                processing_summary = IssueProcessor.create_processing_summary(matches, results)
+                
+                processor.generate_severity_org_report(matches, severity_report_file, 
+                                                     is_group_processing=False, 
+                                                     processing_summary=processing_summary)
+                print(f"   📄 Severity report saved to: {severity_report_file}")
             
             # Print final success message
             print(f"   - Matches processed: {len(matches)}")
@@ -1592,7 +1637,8 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 'success': True,
                 'matches_processed': len(matches),
                 'successful_ignores': results['successful_ignores'],
-                'failed_ignores': results['failed_ignores']
+                'failed_ignores': results['failed_ignores'],
+                'matches': matches if skip_individual_report else None
             }
         
         # Handle normal workflow
@@ -1626,7 +1672,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             processed_issues = []
             
             for i, issue in enumerate(enriched_issues, 1):
-                if i % 100 == 0 or i == 1:
+                if i % PROGRESS_BATCH_SIZE == 0 or i == 1:
                     print(f"   📄 Processing issue {i}/{len(enriched_issues)}...")
                 
                 key_data = processor.extract_issue_key_data(issue)
@@ -1664,12 +1710,28 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             # Process matches and ignore issues (unless review-only mode)
             if args.review_only:
                 print(f"   📋 Review-only mode: Matches saved to {matches_csv_file} for review")
+                
+                # Generate severity report even in review-only mode (unless skipping for group processing)
+                if not skip_individual_report:
+                    severity_report_file = args.severity_report
+                    if not severity_report_file:
+                        severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                    
+                    # Create processing summary for review-only mode (no ignores)
+                    processing_summary = IssueProcessor.create_processing_summary(matches)
+                    
+                    processor.generate_severity_org_report(matches, severity_report_file, 
+                                                         is_group_processing=False, 
+                                                         processing_summary=processing_summary)
+                    print(f"   📄 Severity report saved to: {severity_report_file}")
+                
                 return {
                     'success': True,
                     'matches_processed': len(matches),
                     'successful_ignores': 0,
                     'failed_ignores': 0,
-                    'matches_csv': matches_csv_file
+                    'matches_csv': matches_csv_file,
+                    'matches': matches if skip_individual_report else None
                 }
             else:
                 print(f"   🚫 Processing matches and ignoring issues")
@@ -1685,14 +1747,20 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 if not severity_report_file:
                     severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
                 
-                processor.generate_severity_org_report(matches, severity_report_file)
+                # Create processing summary for single org
+                processing_summary = IssueProcessor.create_processing_summary(matches, results)
+                
+                processor.generate_severity_org_report(matches, severity_report_file, 
+                                                     is_group_processing=False, 
+                                                     processing_summary=processing_summary)
                 
                 return {
                     'success': True,
                     'matches_processed': len(matches),
                     'successful_ignores': results['successful_ignores'],
                     'failed_ignores': results['failed_ignores'],
-                    'matches_csv': matches_csv_file
+                    'matches_csv': matches_csv_file,
+                    'matches': matches if skip_individual_report else None
                 }
     
     except Exception as e:
@@ -1815,10 +1883,14 @@ is that review-only mode skips the actual ignoring of issues.
     print(f"🔧 Initializing Snyk API client (region: {args.snyk_region})...")
     snyk_api = SnykAPI(snyk_token, args.snyk_region)
 
-    # Switch to DataFrame-based matching if requested
+    # Switch to DataFrame-based matching if requested or for large datasets
     if args.df_match:
         print("⚡ Using DataFrame-based matcher (--df-match) for improved performance")
         # Temporarily replace the traditional matcher with the DataFrame version
+        IssueProcessor.match_issues_with_csv = IssueProcessor.match_issues_with_csv_df
+    elif args.group_id:
+        # Auto-enable DataFrame matching for group processing (better performance)
+        print("⚡ Auto-enabling DataFrame-based matcher for group processing performance")
         IssueProcessor.match_issues_with_csv = IssueProcessor.match_issues_with_csv_df
 
     # Handle group processing
@@ -1848,6 +1920,7 @@ is that review-only mode skips the actual ignoring of issues.
         total_matches = 0
         total_successful_ignores = 0
         total_failed_ignores = 0
+        all_matches = []  # Collect all matches for consolidated report
         
         for i, org in enumerate(orgs, 1):
             org_id = org.get('id')
@@ -1855,14 +1928,20 @@ is that review-only mode skips the actual ignoring of issues.
             
             print(f"\n🏢 [{i}/{total_orgs}] Processing organization: {org_name} ({org_id})")
             
-            # Process the organization using the existing logic
-            result = process_single_organization(snyk_api, args, org_id, org_name, csv_data, direct_ignore=False)
+            # Process the organization using the existing logic, skip individual reports
+            result = process_single_organization(snyk_api, args, org_id, org_name, csv_data, direct_ignore=False, skip_individual_report=True)
             
             if result['success']:
                 successful_orgs += 1
                 total_matches += result.get('matches_processed', 0)
                 total_successful_ignores += result.get('successful_ignores', 0)
                 total_failed_ignores += result.get('failed_ignores', 0)
+                
+                # Collect matches for consolidated report
+                org_matches = result.get('matches', [])
+                if org_matches:
+                    all_matches.extend(org_matches)
+                
                 print(f"   ✅ Completed processing {org_name}")
             else:
                 failed_orgs += 1
@@ -1878,6 +1957,37 @@ is that review-only mode skips the actual ignoring of issues.
             print(f"   ❌ Total failed ignores: {total_failed_ignores}")
             if args.dry_run:
                 print(f"   🏃‍♂️ This was a DRY RUN - no actual changes were made")
+        
+        # Generate consolidated group severity report
+        if all_matches:
+            print(f"\n📊 Generating consolidated group severity report")
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            group_report_file = args.severity_report
+            if not group_report_file:
+                group_report_file = f"group_severity_report_{args.group_id}_{timestamp}.txt"
+            
+            # Create processing summary for the report
+            group_stats = {
+                'total_orgs': total_orgs,
+                'successful_orgs': successful_orgs,
+                'failed_orgs': failed_orgs,
+                'total_matches': total_matches,
+                'successful_ignores': total_successful_ignores,
+                'failed_ignores': total_failed_ignores
+            }
+            processing_summary = IssueProcessor.create_processing_summary(
+                all_matches, group_stats, is_group=True, group_stats=group_stats
+            )
+            
+            processor = IssueProcessor(snyk_api)
+            processor.generate_severity_org_report(all_matches, group_report_file, 
+                                                 is_group_processing=True, 
+                                                 processing_summary=processing_summary)
+            print(f"   📄 Consolidated group report saved to: {group_report_file}")
+        else:
+            print(f"\n📊 No matches found across all organizations - no severity report generated")
         
         return  # Exit after group processing
 
@@ -1920,8 +2030,13 @@ is that review-only mode skips the actual ignoring of issues.
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             severity_report_file = f"snyk_severity_report_{timestamp}.txt"
         
+        # Create processing summary for single org
+        processing_summary = IssueProcessor.create_processing_summary(matches, results)
+        
         processor = IssueProcessor(snyk_api)
-        processor.generate_severity_org_report(matches, severity_report_file)
+        processor.generate_severity_org_report(matches, severity_report_file, 
+                                             is_group_processing=False, 
+                                             processing_summary=processing_summary)
         print(f"   📄 Severity report saved to: {severity_report_file}")
 
         print("\n🎉 Snyk ignore processing completed successfully!")
@@ -1978,8 +2093,9 @@ is that review-only mode skips the actual ignoring of issues.
         print(f"❌ Error: {result.get('error', 'Unknown error')}")
         sys.exit(1)
     
-    # For normal workflow, we need to handle additional features like saving matches to CSV
-    # and review-only mode. Let's get the matches that were processed.
+    # Generate severity report for normal workflow (if not already generated in process_single_organization)
+    # The severity report is already generated within process_single_organization for normal workflow
+    
     print(f"\n📊 Processing completed successfully!")
     print(f"   - Matches processed: {result.get('matches_processed', 0)}")
     print(f"   - Successful ignores: {result.get('successful_ignores', 0)}")
@@ -1987,6 +2103,8 @@ is that review-only mode skips the actual ignoring of issues.
     
     if args.dry_run:
         print(f"   - This was a DRY RUN - no actual changes were made")
+    
+    print("   📄 Severity report has been generated and saved")
     
     return
 
