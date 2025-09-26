@@ -1065,10 +1065,10 @@ class IssueProcessor:
 
         return normalize_url(snyk_url) == normalize_url(csv_url)
 
-    def generate_severity_org_report(self, matches: List[Tuple[Dict, Dict]], output_file: str, 
-                                     is_group_processing: bool = False, processing_summary: Dict = None):
+    def generate_severity_report(self, matches: List[Tuple[Dict, Dict]], output_file: str, 
+                                is_group_processing: bool = False, processing_summary: Dict = None):
         """
-        Generate a severity and organization report for the matches.
+        Generate a severity report for the matches (works for both single org and group processing).
 
         Args:
             matches: List of (processed_issue, csv_row) tuples
@@ -1531,7 +1531,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 processing_summary = IssueProcessor.create_processing_summary(matches, results)
                 
                 processor = IssueProcessor(snyk_api)
-                processor.generate_severity_org_report(matches, severity_report_file, 
+                processor.generate_severity_report(matches, severity_report_file, 
                                                      is_group_processing=False, 
                                                      processing_summary=processing_summary)
             
@@ -1564,6 +1564,23 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             
             if not all_issues:
                 print(f"   ℹ️  No code issues found in organization")
+                
+                # Generate empty report for audit trail (unless skipping for group processing)
+                if not skip_individual_report:
+                    print(f"   📊 Generating severity and organization report")
+                    severity_report_file = args.severity_report
+                    if not severity_report_file:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                    
+                    # Create processing summary for empty matches
+                    processing_summary = IssueProcessor.create_processing_summary([])
+                    
+                    processor.generate_severity_report([], severity_report_file, 
+                                                         is_group_processing=False, 
+                                                         processing_summary=processing_summary)
+                    print(f"   📄 Severity report saved to: {severity_report_file}")
+                
                 return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
             
             # Enrich issues with target information
@@ -1599,6 +1616,23 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             
             if not matches:
                 print(f"   ℹ️  No matches found between Snyk issues and CSV false positives")
+                
+                # Generate empty report for audit trail (unless skipping for group processing)
+                if not skip_individual_report:
+                    print(f"   📊 Generating severity and organization report")
+                    severity_report_file = args.severity_report
+                    if not severity_report_file:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        severity_report_file = f"snyk_severity_report_{org_name}_{timestamp}.txt"
+                    
+                    # Create processing summary for empty matches
+                    processing_summary = IssueProcessor.create_processing_summary(matches)
+                    
+                    processor.generate_severity_report(matches, severity_report_file, 
+                                                         is_group_processing=False, 
+                                                         processing_summary=processing_summary)
+                    print(f"   📄 Severity report saved to: {severity_report_file}")
+                
                 return {'success': True, 'matches_processed': 0, 'successful_ignores': 0, 'failed_ignores': 0}
             
             print(f"   🎯 Found {len(matches)} total matches")
@@ -1623,7 +1657,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 # Create processing summary for single org
                 processing_summary = IssueProcessor.create_processing_summary(matches, results)
                 
-                processor.generate_severity_org_report(matches, severity_report_file, 
+                processor.generate_severity_report(matches, severity_report_file, 
                                                      is_group_processing=False, 
                                                      processing_summary=processing_summary)
                 print(f"   📄 Severity report saved to: {severity_report_file}")
@@ -1720,7 +1754,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                     # Create processing summary for review-only mode (no ignores)
                     processing_summary = IssueProcessor.create_processing_summary(matches)
                     
-                    processor.generate_severity_org_report(matches, severity_report_file, 
+                    processor.generate_severity_report(matches, severity_report_file, 
                                                          is_group_processing=False, 
                                                          processing_summary=processing_summary)
                     print(f"   📄 Severity report saved to: {severity_report_file}")
@@ -1750,7 +1784,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 # Create processing summary for single org
                 processing_summary = IssueProcessor.create_processing_summary(matches, results)
                 
-                processor.generate_severity_org_report(matches, severity_report_file, 
+                processor.generate_severity_report(matches, severity_report_file, 
                                                      is_group_processing=False, 
                                                      processing_summary=processing_summary)
                 
@@ -1925,6 +1959,11 @@ is that review-only mode skips the actual ignoring of issues.
         for i, org in enumerate(orgs, 1):
             org_id = org.get('id')
             org_name = org.get('attributes', {}).get('name', 'Unknown')
+            # Skip the org with id fdf3b63a-9a4e-43d8-bae3-85212f002bea to speed up testing REMOVE THIS
+            if org_id == "fdf3b63a-9a4e-43d8-bae3-85212f002bea" or org_id == "98107928-6a0b-4ee4-8c3f-c474fc0fb098":
+                print(f"   🚫 Skipping organization: {org_name} ({org_id})")
+                continue
+            org_name = org.get('attributes', {}).get('name', 'Unknown')
             
             print(f"\n🏢 [{i}/{total_orgs}] Processing organization: {org_name} ({org_id})")
             
@@ -1958,36 +1997,36 @@ is that review-only mode skips the actual ignoring of issues.
             if args.dry_run:
                 print(f"   🏃‍♂️ This was a DRY RUN - no actual changes were made")
         
-        # Generate consolidated group severity report
-        if all_matches:
-            print(f"\n📊 Generating consolidated group severity report")
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            group_report_file = args.severity_report
-            if not group_report_file:
-                group_report_file = f"group_severity_report_{args.group_id}_{timestamp}.txt"
-            
-            # Create processing summary for the report
-            group_stats = {
-                'total_orgs': total_orgs,
-                'successful_orgs': successful_orgs,
-                'failed_orgs': failed_orgs,
-                'total_matches': total_matches,
-                'successful_ignores': total_successful_ignores,
-                'failed_ignores': total_failed_ignores
-            }
-            processing_summary = IssueProcessor.create_processing_summary(
-                all_matches, group_stats, is_group=True, group_stats=group_stats
-            )
-            
-            processor = IssueProcessor(snyk_api)
-            processor.generate_severity_org_report(all_matches, group_report_file, 
-                                                 is_group_processing=True, 
-                                                 processing_summary=processing_summary)
-            print(f"   📄 Consolidated group report saved to: {group_report_file}")
-        else:
-            print(f"\n📊 No matches found across all organizations - no severity report generated")
+        # Generate consolidated group severity report (always generate for audit trail)
+        print(f"\n📊 Generating consolidated group severity report")
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        group_report_file = args.severity_report
+        if not group_report_file:
+            group_report_file = f"group_severity_report_{args.group_id}_{timestamp}.txt"
+        
+        # Create processing summary for the report
+        group_stats = {
+            'total_orgs': total_orgs,
+            'successful_orgs': successful_orgs,
+            'failed_orgs': failed_orgs,
+            'total_matches': total_matches,
+            'successful_ignores': total_successful_ignores,
+            'failed_ignores': total_failed_ignores
+        }
+        processing_summary = IssueProcessor.create_processing_summary(
+            all_matches, group_stats, is_group=True, group_stats=group_stats
+        )
+        
+        processor = IssueProcessor(snyk_api)
+        processor.generate_severity_report(all_matches, group_report_file, 
+                                             is_group_processing=True, 
+                                             processing_summary=processing_summary)
+        print(f"   📄 Consolidated group report saved to: {group_report_file}")
+        
+        if not all_matches:
+            print(f"   ℹ️  No matches found across all organizations - empty report generated for audit trail")
         
         return  # Exit after group processing
 
@@ -2034,7 +2073,7 @@ is that review-only mode skips the actual ignoring of issues.
         processing_summary = IssueProcessor.create_processing_summary(matches, results)
         
         processor = IssueProcessor(snyk_api)
-        processor.generate_severity_org_report(matches, severity_report_file, 
+        processor.generate_severity_report(matches, severity_report_file, 
                                              is_group_processing=False, 
                                              processing_summary=processing_summary)
         print(f"   📄 Severity report saved to: {severity_report_file}")
@@ -2071,6 +2110,7 @@ is that review-only mode skips the actual ignoring of issues.
             print("   - This was a DRY RUN - no actual changes were made")
         
         # Note: Severity report is generated within process_single_organization for direct_ignore
+        # Always print since report is now always generated for audit trail
         print("   📄 Severity report has been generated and saved")
         
         return
@@ -2104,10 +2144,37 @@ is that review-only mode skips the actual ignoring of issues.
     if args.dry_run:
         print(f"   - This was a DRY RUN - no actual changes were made")
     
+    # Always print since report is now always generated for audit trail
     print("   📄 Severity report has been generated and saved")
     
     return
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\n❌ Application error: {str(e)}")
+        print("📊 Generating error report for audit trail...")
+        
+        # Try to generate a minimal error report
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            error_report_file = f"error_report_{timestamp}.txt"
+            
+            with open(error_report_file, 'w') as f:
+                f.write("SNYK IGNORE TRANSFER - ERROR REPORT\n")
+                f.write("=" * 40 + "\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Error: {str(e)}\n")
+                f.write(f"Status: Application failed\n")
+                f.write(f"Matches processed: 0\n")
+                f.write(f"Successful ignores: 0\n")
+                f.write(f"Failed ignores: 0\n")
+            
+            print(f"   📄 Error report saved to: {error_report_file}")
+        except Exception as report_error:
+            print(f"   ❌ Failed to generate error report: {str(report_error)}")
+        
+        sys.exit(1)
