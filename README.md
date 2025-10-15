@@ -25,6 +25,7 @@ A comprehensive tool for transferring ignore rules from CSV data to Snyk issues.
 - **Severity Reports**: Generate detailed text reports of issues by severity and organization
 - **Group Processing**: Process all organizations in a Snyk group with pagination
 - **Conflict Resolution**: Automatically handle existing policies (409 conflicts)
+- **GitHub Integration**: Fetch and parse configuration files from GitHub repositories (optional)
 
 ## 🛠️ Installation
 
@@ -43,7 +44,9 @@ A comprehensive tool for transferring ignore rules from CSV data to Snyk issues.
 
 2. **Install dependencies**:
    ```bash
-   pip install requests pandas
+   pip install -r requirements.txt
+   # Or manually:
+   pip install requests pandas PyGithub
    ```
 
 3. **Set up environment variables**:
@@ -89,6 +92,14 @@ python3 snyk_ignore_transfer.py \
   --snyk-region SNYK-EU-01 \
   --ignore-reason "Custom reason for ignoring" \
   --repo-url-field custom_repourl_field
+
+# GitHub integration (fetch repository configuration files)
+export GITHUB_TOKEN="your_github_token"
+python3 snyk_ignore_transfer.py \
+  --org-id YOUR_ORG_ID \
+  --csv-file issues.csv \
+  --github-properties-file appsec.properties \
+  --github-property-name app.version
 ```
 
 ## 📊 Workflow Examples
@@ -131,6 +142,7 @@ python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --sev
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SNYK_TOKEN` | Yes | Snyk API token for authentication |
+| `GITHUB_TOKEN` | No | GitHub personal access token for repository access (optional) |
 
 ### Command Line Options
 
@@ -147,6 +159,10 @@ python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --sev
 | `--snyk-region` | Snyk API region | SNYK-US-01 |
 | `--ignore-reason` | Reason for ignoring issues | "False positive identified via CSV analysis" |
 | `--repo-url-field` | CSV field containing repo URL | repourl |
+| `--github-token` | GitHub personal access token | Use GITHUB_TOKEN env var |
+| `--github-properties-file` | Properties file to fetch from repos | appsec.properties |
+| `--github-property-name` | Specific property to extract | All properties |
+| `--df-match` | Use DataFrame matching (faster) | False |
 
 ## 📁 File Structure
 
@@ -228,6 +244,46 @@ Use `--verbose` flag for detailed debugging information:
 
 ```bash
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --verbose
+```
+
+## 🔗 GitHub Integration
+
+The tool now supports optional GitHub integration to fetch and parse configuration files from your repositories. This allows you to enrich issue data with properties from files like `appsec.properties`.
+
+### Quick Start
+
+1. **Get a GitHub Token**: Create a personal access token at [GitHub Settings](https://github.com/settings/tokens)
+   - Scopes needed: `repo` (or `public_repo` for public repos only)
+
+2. **Set the Token**:
+   ```bash
+   export GITHUB_TOKEN="your_github_token_here"
+   ```
+
+3. **Use GitHub Integration**:
+   ```bash
+   python3 snyk_ignore_transfer.py \
+     --org-id YOUR_ORG_ID \
+     --csv-file issues.csv \
+     --github-properties-file appsec.properties \
+     --github-property-name app.version
+   ```
+
+### Features
+
+- **File Fetching**: Read any file from GitHub repositories
+- **Properties Parsing**: Parse Java properties files (key=value format)
+- **Smart Branch Matching**: Tries to match the branch Snyk scanned
+- **Caching**: Minimizes API calls to avoid rate limits
+- **Flexible URLs**: Supports HTTPS and SSH GitHub URLs
+
+### Documentation
+
+For detailed information about GitHub integration, see [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md).
+
+For testing GitHub integration, run:
+```bash
+python3 test_github_integration.py
 ```
 
 ## 📞 Support

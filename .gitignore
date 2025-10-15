@@ -27,3 +27,10 @@ __pycache__/
 
 # Examples and test files
 snyk_user_provisioning_report.py
+
+# Temporary analysis and test files
+tmp/
+comprehensive_robthreefold_analysis_*.txt
+snyk_test_comparison_*.txt
+large_test_dataset*.csv
+large_test_dataset*.txt

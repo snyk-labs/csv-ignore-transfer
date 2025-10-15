@@ -18,6 +18,8 @@ import csv
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+import re
+from urllib.parse import urlparse
 
 # Constants for better maintainability
 PROGRESS_BATCH_SIZE = 100  # Progress update frequency
@@ -421,13 +423,224 @@ class SnykAPI:
             return False
 
 
+class GitHubClient:
+    """GitHub API client for fetching repository files and configuration."""
+
+    def __init__(self, token: Optional[str] = None):
+        """
+        Initialize GitHub client.
+        
+        Args:
+            token: GitHub personal access token (optional, but recommended for rate limits)
+        """
+        self.token = token
+        self.github = None
+        
+        # Only import and initialize if token is provided
+        if token:
+            try:
+                from github import Github
+                self.github = Github(token)
+                print("   ✅ GitHub client initialized successfully")
+            except ImportError:
+                print("   ⚠️  Warning: PyGithub not installed. Install with: pip install PyGithub")
+                self.github = None
+            except Exception as e:
+                print(f"   ⚠️  Warning: Failed to initialize GitHub client: {e}")
+                self.github = None
+        else:
+            print("   ℹ️  GitHub integration disabled (no token provided)")
+
+    def parse_github_url(self, repo_url: str) -> Optional[Tuple[str, str]]:
+        """
+        Parse a GitHub repository URL to extract owner and repo name.
+        
+        Args:
+            repo_url: GitHub repository URL (various formats supported)
+            
+        Returns:
+            Tuple of (owner, repo_name) or None if parsing fails
+            
+        Examples:
+            https://github.com/owner/repo.git -> (owner, repo)
+            https://github.com/owner/repo -> (owner, repo)
+            git@github.com:owner/repo.git -> (owner, repo)
+        """
+        if not repo_url:
+            return None
+        
+        try:
+            # Remove common prefixes and suffixes
+            url = repo_url.strip()
+            
+            # Handle git@ SSH URLs
+            if url.startswith('git@github.com:'):
+                # Extract owner/repo from git@github.com:owner/repo.git
+                path = url.replace('git@github.com:', '')
+                path = path.rstrip('.git')
+                parts = path.split('/')
+                if len(parts) == 2:
+                    return (parts[0], parts[1])
+            
+            # Handle HTTP/HTTPS URLs
+            elif 'github.com' in url:
+                # Parse URL
+                parsed = urlparse(url)
+                path = parsed.path.strip('/')
+                
+                # Remove .git suffix if present
+                if path.endswith('.git'):
+                    path = path[:-4]
+                
+                # Split path into owner/repo
+                parts = path.split('/')
+                if len(parts) >= 2:
+                    return (parts[0], parts[1])
+            
+            return None
+            
+        except Exception as e:
+            print(f"   ⚠️  Warning: Failed to parse GitHub URL {repo_url}: {e}")
+            return None
+
+    def get_file_contents(self, repo_url: str, file_path: str, branch: str = "main") -> Optional[str]:
+        """
+        Fetch file contents from a GitHub repository.
+        
+        Args:
+            repo_url: GitHub repository URL
+            file_path: Path to file within the repository
+            branch: Branch name (default: main)
+            
+        Returns:
+            File contents as string or None if not found
+        """
+        if not self.github:
+            print(f"   ⚠️  GitHub client not initialized - skipping file fetch")
+            return None
+        
+        try:
+            # Parse repository URL
+            parsed = self.parse_github_url(repo_url)
+            if not parsed:
+                print(f"   ⚠️  Could not parse GitHub URL: {repo_url}")
+                return None
+            
+            owner, repo_name = parsed
+            
+            # Get repository
+            repo = self.github.get_repo(f"{owner}/{repo_name}")
+            
+            # Try to get file contents from specified branch
+            try:
+                file_content = repo.get_contents(file_path, ref=branch)
+                if isinstance(file_content, list):
+                    print(f"   ⚠️  Path {file_path} is a directory, not a file")
+                    return None
+                
+                # Decode content
+                content = file_content.decoded_content.decode('utf-8')
+                return content
+                
+            except Exception as branch_error:
+                # If branch doesn't exist, try default branch
+                if branch != repo.default_branch:
+                    print(f"   ℹ️  Branch '{branch}' not found, trying default branch '{repo.default_branch}'")
+                    try:
+                        file_content = repo.get_contents(file_path, ref=repo.default_branch)
+                        if isinstance(file_content, list):
+                            print(f"   ⚠️  Path {file_path} is a directory, not a file")
+                            return None
+                        content = file_content.decoded_content.decode('utf-8')
+                        return content
+                    except:
+                        pass
+                
+                print(f"   ⚠️  File not found: {file_path} in {owner}/{repo_name} (branch: {branch})")
+                return None
+                
+        except Exception as e:
+            print(f"   ⚠️  Error fetching file from GitHub: {e}")
+            return None
+
+    def parse_properties_file(self, content: str, attribute_name: Optional[str] = None) -> Dict[str, str]:
+        """
+        Parse a properties file (key=value format) and optionally extract a specific attribute.
+        
+        Args:
+            content: Properties file content as string
+            attribute_name: Specific attribute to extract (optional)
+            
+        Returns:
+            Dictionary of all properties, or single-item dict if attribute_name specified
+        """
+        properties = {}
+        
+        if not content:
+            return properties
+        
+        try:
+            lines = content.split('\n')
+            for line in lines:
+                line = line.strip()
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#') or line.startswith('!'):
+                    continue
+                
+                # Parse key=value
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    properties[key.strip()] = value.strip()
+                elif ':' in line:
+                    # Also support colon separator
+                    key, value = line.split(':', 1)
+                    properties[key.strip()] = value.strip()
+            
+            # If specific attribute requested, return only that
+            if attribute_name:
+                if attribute_name in properties:
+                    return {attribute_name: properties[attribute_name]}
+                else:
+                    print(f"   ⚠️  Attribute '{attribute_name}' not found in properties file")
+                    return {}
+            
+            return properties
+            
+        except Exception as e:
+            print(f"   ⚠️  Error parsing properties file: {e}")
+            return {}
+
+    def get_property_value(self, repo_url: str, file_path: str, attribute_name: str, branch: str = "main") -> Optional[str]:
+        """
+        Convenience method to get a specific property value from a GitHub repository file.
+        
+        Args:
+            repo_url: GitHub repository URL
+            file_path: Path to properties file
+            attribute_name: Property key to retrieve
+            branch: Branch name (default: main)
+            
+        Returns:
+            Property value as string or None if not found
+        """
+        content = self.get_file_contents(repo_url, file_path, branch)
+        if not content:
+            return None
+        
+        properties = self.parse_properties_file(content, attribute_name)
+        return properties.get(attribute_name)
+
+
 class IssueProcessor:
     """Process and enrich Snyk issues with target information."""
 
-    def __init__(self, snyk_api: SnykAPI):
+    def __init__(self, snyk_api: SnykAPI, github_client: Optional['GitHubClient'] = None):
         self.snyk_api = snyk_api
+        self.github_client = github_client
         self.targets_cache = {}
         self.cwe_mapping = self._build_cwe_mapping()
+        self.github_properties_cache = {}  # Cache for GitHub properties to avoid repeated API calls
 
     @staticmethod
     def create_processing_summary(matches: List, results: Dict = None, is_group: bool = False, 
@@ -637,6 +850,85 @@ class IssueProcessor:
             'raw_attributes': attributes  # Include raw attributes for debugging
         }
 
+    def get_github_property(self, repo_url: str, properties_file: str, 
+                           attribute_name: Optional[str], branch: str = "main") -> Optional[Dict[str, str]]:
+        """
+        Fetch property/properties from a GitHub repository configuration file.
+        
+        Args:
+            repo_url: GitHub repository URL
+            properties_file: Path to properties file (e.g., 'appsec.properties')
+            attribute_name: Specific attribute to retrieve (None for all)
+            branch: Branch name
+            
+        Returns:
+            Dictionary of properties or None if not available
+        """
+        if not self.github_client or not self.github_client.github:
+            return None
+        
+        # Create cache key
+        cache_key = f"{repo_url}|{properties_file}|{branch}"
+        
+        # Check cache first
+        if cache_key in self.github_properties_cache:
+            cached_props = self.github_properties_cache[cache_key]
+            if attribute_name:
+                return {attribute_name: cached_props.get(attribute_name)} if attribute_name in cached_props else None
+            return cached_props
+        
+        # Fetch from GitHub
+        try:
+            content = self.github_client.get_file_contents(repo_url, properties_file, branch)
+            if content:
+                properties = self.github_client.parse_properties_file(content)
+                # Cache all properties
+                self.github_properties_cache[cache_key] = properties
+                
+                # Return requested attribute or all properties
+                if attribute_name:
+                    return {attribute_name: properties.get(attribute_name)} if attribute_name in properties else None
+                return properties
+            else:
+                # Cache empty result to avoid repeated failed lookups
+                self.github_properties_cache[cache_key] = {}
+                return None
+                
+        except Exception as e:
+            print(f"   ⚠️  Error fetching GitHub properties: {e}")
+            return None
+
+    def enrich_issue_with_github_data(self, issue_data: Dict, properties_file: str = "appsec.properties",
+                                     attribute_name: Optional[str] = None) -> Dict:
+        """
+        Enrich issue data with GitHub properties.
+        
+        Args:
+            issue_data: Issue data dictionary
+            properties_file: Name of properties file to fetch
+            attribute_name: Specific attribute to fetch (None for all)
+            
+        Returns:
+            Enriched issue data dictionary
+        """
+        if not self.github_client:
+            return issue_data
+        
+        repo_url = issue_data.get('target_url')
+        branch = issue_data.get('branch', 'main')
+        
+        if not repo_url:
+            return issue_data
+        
+        # Fetch GitHub properties
+        properties = self.get_github_property(repo_url, properties_file, attribute_name, branch)
+        
+        if properties:
+            # Add GitHub properties to issue data
+            issue_data['github_properties'] = properties
+        
+        return issue_data
+
     def _build_cwe_mapping(self) -> Dict[str, str]:
         """
         Build a mapping of common Snyk issue patterns to CWE identifiers.
@@ -706,6 +998,42 @@ class IssueProcessor:
         filename = file_path.replace('\\', '/').split('/')[-1]
         return filename.strip() if filename.strip() else None
 
+    def _extract_repo_name(self, repo_url: str) -> Optional[str]:
+        """
+        Extract repository name from GitHub URL.
+
+        Args:
+            repo_url: GitHub repository URL like "https://github.com/robthreefold/vulnerable-app"
+
+        Returns:
+            Repository name like "vulnerable-app" or None if invalid
+        """
+        if not repo_url:
+            return None
+
+        try:
+            # Handle different URL formats
+            url = repo_url.strip()
+            if url.startswith('https://github.com/'):
+                # https://github.com/owner/repo
+                parts = url.replace('https://github.com/', '').split('/')
+                if len(parts) >= 2:
+                    return parts[1].strip()
+            elif url.startswith('git@github.com:'):
+                # git@github.com:owner/repo.git
+                parts = url.replace('git@github.com:', '').replace('.git', '').split('/')
+                if len(parts) >= 2:
+                    return parts[1].strip()
+            elif 'github.com' in url:
+                # Handle other GitHub URL formats
+                parts = url.split('github.com/')[-1].split('/')
+                if len(parts) >= 2:
+                    return parts[1].strip()
+        except Exception:
+            pass
+
+        return None
+
     def _safe_float_to_int(self, value) -> Optional[int]:
         """
         Safely convert a value to integer, handling floats like 51.0.
@@ -730,20 +1058,30 @@ class IssueProcessor:
         return None
 
     def match_issues_with_csv(self, processed_issues: List[Dict], csv_data: List[Dict],
-                             repo_url_field: str = 'repourl') -> List[Tuple[Dict, Dict]]:
+                             repo_url_field: str = 'repourl', use_repo_name_matching: bool = False) -> List[Tuple[Dict, Dict]]:
         """
         Match Snyk issues with CSV data based on Branch + File name + CWE + Line range.
 
-        Matching Criteria:
+        Matching Criteria (Traditional Mode):
         - Branch: Must match exactly
         - File name: Extract filename after last "/" - must match exactly
         - CWE: Must match exactly (normalize CSV values)
+        - Repository URL: Must match exactly
+        - Line numbers: Optional - CSV line within Snyk's start_line to end_line range
+
+        Matching Criteria (Repository Name Mode):
+        - Repository name: Extract repo name from URLs - must match exactly
+        - Branch: Must match exactly
+        - File name: Extract filename after last "/" - must match exactly
+        - CWE: Must match exactly (normalize CSV values)
+        - GitHub Properties: Fetch old_repo_url from appsec.properties for final validation
         - Line numbers: Optional - CSV line within Snyk's start_line to end_line range
 
         Args:
             processed_issues: List of processed Snyk issues
             csv_data: List of CSV row dictionaries
             repo_url_field: Name of the field containing repo URL in CSV
+            use_repo_name_matching: If True, use repository name matching with GitHub properties
 
         Returns:
             List of tuples (snyk_issue, csv_row) for matched items
@@ -770,8 +1108,9 @@ class IssueProcessor:
             if not csv_filename:
                 continue
 
-            # Extract CSV repository URL
+            # Extract CSV repository URL and repo name
             csv_repo_url = self._safe_str(csv_row.get(repo_url_field, ''))
+            csv_repo_name = self._extract_repo_name(csv_repo_url) if use_repo_name_matching else None
 
             for processed_issue in processed_issues:
                 issue_data = processed_issue['key_data']
@@ -805,9 +1144,29 @@ class IssueProcessor:
                 if snyk_cwe != csv_cwe:
                     continue
 
-                # Required Match 4: Repository URL must match exactly
-                if csv_repo_url and snyk_target_url != csv_repo_url:
-                    continue
+                # Repository matching logic
+                if use_repo_name_matching:
+                    # Repository Name Mode: Match by repo name + GitHub properties
+                    snyk_repo_name = self._extract_repo_name(snyk_target_url)
+                    if not snyk_repo_name or snyk_repo_name != csv_repo_name:
+                        continue
+                    
+                    # Fetch GitHub properties to get old_repo_url
+                    if self.github_client and self.github_client.github:
+                        try:
+                            properties = self.get_github_property(snyk_target_url, 'appsec.properties', 'old_repo_url', snyk_branch)
+                            if properties and 'old_repo_url' in properties:
+                                old_repo_url = properties['old_repo_url']
+                                if old_repo_url and old_repo_url != csv_repo_url:
+                                    # old_repo_url doesn't match CSV URL, skip this match
+                                    continue
+                        except Exception as e:
+                            print(f"   ⚠️  Warning: Could not fetch GitHub properties for {snyk_target_url}: {e}")
+                            # Continue without GitHub validation if properties can't be fetched
+                else:
+                    # Traditional Mode: Exact URL matching
+                    if csv_repo_url and snyk_target_url != csv_repo_url:
+                        continue
 
                 # Optional Match: Line numbers (CSV line within Snyk range)
                 line_match = False
@@ -818,7 +1177,8 @@ class IssueProcessor:
                 # We have a match!
                 matches.append((processed_issue, csv_row))
                 line_status = "✅" if line_match else "❓"
-                print(f"   ✅ Match found: {csv_filename} | {csv_cwe} | {csv_branch} | Repo: ✅ | Line: {line_status}")
+                repo_status = "✅" if (use_repo_name_matching and csv_repo_name) or (not use_repo_name_matching and csv_repo_url) else "❓"
+                print(f"   ✅ Match found: {csv_filename} | {csv_cwe} | {csv_branch} | Repo: {repo_status} | Line: {line_status}")
                 break  # Move to next CSV row
 
         return matches
@@ -853,7 +1213,7 @@ class IssueProcessor:
             url = url[4:]
         return url
 
-    def match_issues_with_csv_df(self, processed_issues: List[Dict], csv_data: List[Dict], repo_url_field: str = 'repourl') -> List[Tuple[Dict, Dict]]:
+    def match_issues_with_csv_df(self, processed_issues: List[Dict], csv_data: List[Dict], repo_url_field: str = 'repourl', use_repo_name_matching: bool = False) -> List[Tuple[Dict, Dict]]:
         """
         Fast DataFrame-based matcher using pandas. Joins on branch, filename, cwe, and repo URL.
         
@@ -887,6 +1247,10 @@ class IssueProcessor:
             df_csv['repourl'] = df_csv['repourl'].astype(str).apply(self._normalize_repo_url)
         else:
             df_csv['repourl'] = ''
+        
+        # Add repository name extraction for repo name matching
+        if use_repo_name_matching:
+            df_csv['repo_name'] = df_csv['repourl'].apply(self._extract_repo_name)
 
         # Optional line as numeric
         def to_int_safe(x):
@@ -902,6 +1266,7 @@ class IssueProcessor:
             kd = it.get('key_data', {})
             fp = kd.get('file_path') or ''
             filename = fp.replace('\\\\', '/').split('/')[-1].strip() if fp else ''
+            target_url = self._normalize_repo_url(kd.get('target_url'))
             key_rows.append({
                 'issue_id': kd.get('issue_id'),
                 'title': kd.get('title'),
@@ -916,7 +1281,8 @@ class IssueProcessor:
                 'created_at': kd.get('created_at'),
                 'status': kd.get('status'),
                 'org_id': kd.get('org_id'),
-                'target_url': self._normalize_repo_url(kd.get('target_url')),
+                'target_url': target_url,
+                'repo_name': self._extract_repo_name(target_url) if use_repo_name_matching else None,
             })
         df_issues = pd.DataFrame(key_rows)
         if df_issues.empty:
@@ -929,17 +1295,61 @@ class IssueProcessor:
         df_issues['target_url'] = df_issues['target_url'].astype(str)
 
         # 3) Merge on exact keys (same criteria as traditional matcher)
-        merged = df_csv.merge(
-            df_issues,
-            how='inner',
-            left_on=['branch', 'filename', 'cwe', 'repourl'],
-            right_on=['branch', 'filename', 'cwe', 'target_url'],
-            suffixes=('_csv', '_snyk')
-        )
+        if use_repo_name_matching:
+            # Repository name matching: merge on branch, filename, cwe, and repo_name
+            merged = df_csv.merge(
+                df_issues,
+                how='inner',
+                left_on=['branch', 'filename', 'cwe', 'repo_name'],
+                right_on=['branch', 'filename', 'cwe', 'repo_name'],
+                suffixes=('_csv', '_snyk')
+            )
+        else:
+            # Traditional matching: merge on branch, filename, cwe, and repourl
+            merged = df_csv.merge(
+                df_issues,
+                how='inner',
+                left_on=['branch', 'filename', 'cwe', 'repourl'],
+                right_on=['branch', 'filename', 'cwe', 'target_url'],
+                suffixes=('_csv', '_snyk')
+            )
         if merged.empty:
             return []
 
-        # 4) Vectorized optional line-range filter (same logic as traditional matcher)
+        # 4) GitHub properties validation for repository name matching
+        if use_repo_name_matching and self.github_client and self.github_client.github:
+            print("   🔍 Validating matches with GitHub properties...")
+            validated_matches = []
+            
+            for _, row in merged.iterrows():
+                target_url = row.get('target_url')
+                branch = row.get('branch')
+                csv_repourl = row.get('repourl')
+                
+                if target_url and branch and csv_repourl:
+                    try:
+                        properties = self.get_github_property(target_url, 'appsec.properties', 'old_repo_url', branch)
+                        if properties and 'old_repo_url' in properties:
+                            old_repo_url = properties['old_repo_url']
+                            if old_repo_url and old_repo_url == csv_repourl:
+                                validated_matches.append(row)
+                            # Skip if old_repo_url doesn't match
+                        else:
+                            # No old_repo_url found, include the match (fallback behavior)
+                            validated_matches.append(row)
+                    except Exception as e:
+                        print(f"   ⚠️  Warning: Could not validate GitHub properties for {target_url}: {e}")
+                        # Include the match if GitHub validation fails (fallback behavior)
+                        validated_matches.append(row)
+                else:
+                    validated_matches.append(row)
+            
+            if validated_matches:
+                merged = pd.DataFrame(validated_matches)
+            else:
+                return []
+
+        # 5) Vectorized optional line-range filter (same logic as traditional matcher)
         def as_Int64(s):
             try:
                 return s.astype('Int64')
@@ -954,7 +1364,7 @@ class IssueProcessor:
         if merged.empty:
             return []
 
-        # 5) Rehydrate matches (convert back to expected format)
+        # 6) Rehydrate matches (convert back to expected format)
         by_issue_id = {it['key_data'].get('issue_id'): it for it in processed_issues}
         matches: List[Tuple[Dict, Dict]] = []
         for _, r in merged.iterrows():
@@ -1473,7 +1883,7 @@ def display_results_summary(results: Dict, dry_run: bool = False):
         print(f"   📈 Success rate: {success_rate:.1f}%")
 
 
-def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str, csv_data: List[Dict] = None, direct_ignore: bool = False, skip_individual_report: bool = False) -> Dict:
+def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: str, csv_data: List[Dict] = None, direct_ignore: bool = False, skip_individual_report: bool = False, github_client: Optional[GitHubClient] = None) -> Dict:
     """
     Process a single organization with the current workflow.
     
@@ -1530,7 +1940,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 # Create processing summary for single org
                 processing_summary = IssueProcessor.create_processing_summary(matches, results)
                 
-                processor = IssueProcessor(snyk_api)
+                processor = IssueProcessor(snyk_api, github_client)
                 processor.generate_severity_report(matches, severity_report_file, 
                                                      is_group_processing=False, 
                                                      processing_summary=processing_summary)
@@ -1556,7 +1966,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             print(f"   ✅ Using pre-loaded CSV data ({len(csv_data)} rows)")
             
             # Initialize issue processor
-            processor = IssueProcessor(snyk_api)
+            processor = IssueProcessor(snyk_api, github_client)
             
             # Get all code issues for the organization
             print(f"   🚀 Fetching all code issues for organization {org_id}")
@@ -1611,7 +2021,8 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             matches = processor.match_issues_with_csv(
                 processed_issues=processed_issues,
                 csv_data=csv_data,
-                repo_url_field=args.repo_url_field
+                repo_url_field=args.repo_url_field,
+                use_repo_name_matching=args.repo_name_matching
             )
             
             if not matches:
@@ -1680,7 +2091,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             print(f"   🔍 Standard matching workflow")
             
             # Initialize issue processor
-            processor = IssueProcessor(snyk_api)
+            processor = IssueProcessor(snyk_api, github_client)
             
             # Get all code issues for the organization
             print(f"   🚀 Fetching all code issues for organization {org_id}")
@@ -1725,7 +2136,8 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             matches = processor.match_issues_with_csv(
                 processed_issues=processed_issues,
                 csv_data=csv_data,
-                repo_url_field=args.repo_url_field
+                repo_url_field=args.repo_url_field,
+                use_repo_name_matching=args.repo_name_matching
             )
             
             if not matches:
@@ -1830,8 +2242,23 @@ Workflow Examples:
 5. Review-only mode (DEPRECATED - both modes save CSV):
   %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --review-only
 
+6. GitHub integration (fetch properties from repository files):
+  %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --github-token YOUR_TOKEN
+  %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --github-properties-file config/app.properties
+  %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --github-property-name app.version
+
+7. Repository name matching (for migration scenarios):
+  %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --repo-name-matching --github-token YOUR_TOKEN
+  %(prog)s --org-id YOUR_ORG_ID --csv-file issues.csv --repo-name-matching --github-properties-file appsec.properties
+
 Note: Both normal and review-only modes save matches to CSV. The only difference
 is that review-only mode skips the actual ignoring of issues.
+
+GitHub Integration:
+  - Use --github-token or set GITHUB_TOKEN environment variable
+  - Default properties file is 'appsec.properties'
+  - Use --github-property-name to fetch a specific property value
+  - Properties are cached to minimize API calls
         """
     )
 
@@ -1865,6 +2292,14 @@ is that review-only mode skips the actual ignoring of issues.
                        help='Generate severity and organization report to specified file (optional)')
     parser.add_argument('--df-match', action='store_true',
                        help='Use pandas DataFrame-based matching for improved performance with large datasets')
+    parser.add_argument('--github-token',
+                       help='GitHub personal access token for fetching repository files (optional, can also use GITHUB_TOKEN env var)')
+    parser.add_argument('--github-properties-file', default='appsec.properties',
+                       help='Name of properties file to fetch from GitHub repositories (default: appsec.properties)')
+    parser.add_argument('--github-property-name',
+                       help='Specific property/attribute to extract from the properties file (optional, fetches all if not specified)')
+    parser.add_argument('--repo-name-matching', action='store_true',
+                       help='Use repository name matching instead of exact URL matching. Fetches old_repo_url from appsec.properties for migration scenarios.')
 
     args = parser.parse_args()
 
@@ -1917,6 +2352,16 @@ is that review-only mode skips the actual ignoring of issues.
     print(f"🔧 Initializing Snyk API client (region: {args.snyk_region})...")
     snyk_api = SnykAPI(snyk_token, args.snyk_region)
 
+    # Initialize GitHub client (optional)
+    github_client = None
+    github_token = args.github_token or os.environ.get('GITHUB_TOKEN')
+    if github_token:
+        print(f"🔧 Initializing GitHub client...")
+        github_client = GitHubClient(github_token)
+    elif args.github_property_name or args.github_properties_file != 'appsec.properties':
+        print("⚠️  Warning: GitHub parameters specified but no token provided. Use --github-token or GITHUB_TOKEN env var")
+        print("   GitHub integration will be disabled.")
+
     # Switch to DataFrame-based matching if requested or for large datasets
     if args.df_match:
         print("⚡ Using DataFrame-based matcher (--df-match) for improved performance")
@@ -1968,7 +2413,7 @@ is that review-only mode skips the actual ignoring of issues.
             print(f"\n🏢 [{i}/{total_orgs}] Processing organization: {org_name} ({org_id})")
             
             # Process the organization using the existing logic, skip individual reports
-            result = process_single_organization(snyk_api, args, org_id, org_name, csv_data, direct_ignore=False, skip_individual_report=True)
+            result = process_single_organization(snyk_api, args, org_id, org_name, csv_data, direct_ignore=False, skip_individual_report=True, github_client=github_client)
             
             if result['success']:
                 successful_orgs += 1
@@ -2019,7 +2464,7 @@ is that review-only mode skips the actual ignoring of issues.
             all_matches, group_stats, is_group=True, group_stats=group_stats
         )
         
-        processor = IssueProcessor(snyk_api)
+        processor = IssueProcessor(snyk_api, github_client)
         processor.generate_severity_report(all_matches, group_report_file, 
                                              is_group_processing=True, 
                                              processing_summary=processing_summary)
@@ -2072,7 +2517,7 @@ is that review-only mode skips the actual ignoring of issues.
         # Create processing summary for single org
         processing_summary = IssueProcessor.create_processing_summary(matches, results)
         
-        processor = IssueProcessor(snyk_api)
+        processor = IssueProcessor(snyk_api, github_client)
         processor.generate_severity_report(matches, severity_report_file, 
                                              is_group_processing=False, 
                                              processing_summary=processing_summary)
@@ -2095,7 +2540,7 @@ is that review-only mode skips the actual ignoring of issues.
             sys.exit(1)
         
         # Use process_single_organization with direct_ignore=True
-        result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=True)
+        result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=True, github_client=github_client)
         
         if not result['success']:
             print(f"❌ Error: {result.get('error', 'Unknown error')}")
@@ -2127,7 +2572,7 @@ is that review-only mode skips the actual ignoring of issues.
         sys.exit(1)
     
     # Use process_single_organization for consistency
-    result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=False)
+    result = process_single_organization(snyk_api, args, args.org_id, "Single Organization", csv_data, direct_ignore=False, github_client=github_client)
     
     if not result['success']:
         print(f"❌ Error: {result.get('error', 'Unknown error')}")
