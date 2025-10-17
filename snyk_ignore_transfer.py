@@ -439,8 +439,8 @@ class GitHubClient:
         # Only import and initialize if token is provided
         if token:
             try:
-                from github import Github
-                self.github = Github(token)
+                from github import Github, Auth
+                self.github = Github(auth=Auth.Token(token))
                 print("   ✅ GitHub client initialized successfully")
             except ImportError:
                 print("   ⚠️  Warning: PyGithub not installed. Install with: pip install PyGithub")
@@ -1151,13 +1151,13 @@ class IssueProcessor:
                     if not snyk_repo_name or snyk_repo_name != csv_repo_name:
                         continue
                     
-                    # Fetch GitHub properties to get old_repo_url
+                    # GitHub properties validation
                     if self.github_client and self.github_client.github:
                         try:
                             properties = self.get_github_property(snyk_target_url, 'appsec.properties', 'old_repo_url', snyk_branch)
                             if properties and 'old_repo_url' in properties:
                                 old_repo_url = properties['old_repo_url']
-                                if old_repo_url and old_repo_url != csv_repo_url:
+                                if old_repo_url and old_repo_url.lower() != csv_repo_url.lower():
                                     # old_repo_url doesn't match CSV URL, skip this match
                                     continue
                         except Exception as e:
@@ -1331,7 +1331,7 @@ class IssueProcessor:
                         properties = self.get_github_property(target_url, 'appsec.properties', 'old_repo_url', branch)
                         if properties and 'old_repo_url' in properties:
                             old_repo_url = properties['old_repo_url']
-                            if old_repo_url and old_repo_url == csv_repourl:
+                            if old_repo_url and old_repo_url.lower() == csv_repourl.lower():
                                 validated_matches.append(row)
                             # Skip if old_repo_url doesn't match
                         else:
