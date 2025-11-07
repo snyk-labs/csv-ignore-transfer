@@ -1,18 +1,20 @@
 # Contributing to Snyk Ignore Transfer
 
-We love your input! We want to make contributing to Snyk Ignore Transfer as easy and transparent as possible, whether it's:
+## Repository Status
 
-- Reporting a bug
-- Discussing the current state of the code
-- Submitting a fix
-- Proposing new features
-- Becoming a maintainer
+**This repository is closed to public contributions.**
 
-## We Develop with Github
-We use GitHub to host code, to track issues and feature requests, as well as accept pull requests.
+This project is maintained by Snyk and is not accepting external contributions at this time.
 
-## We Use [Github Flow](https://guides.github.com/introduction/flow/index.html)
-Pull requests are the best way to propose changes to the codebase. We actively welcome your pull requests:
+## Internal Contributors
+
+If you are a Snyk employee contributing to this project:
+
+### Contributor License Agreement (CLA)
+
+All contributors must have a valid Contributor License Agreement (CLA) on file with Snyk. This protects both the contributor and Snyk's intellectual property.
+
+### Development Workflow
 
 1. Fork the repo and create your branch from `main`.
 2. If you've added code that should be tested, add tests.
@@ -21,26 +23,21 @@ Pull requests are the best way to propose changes to the codebase. We actively w
 5. Make sure your code lints.
 6. Issue that pull request!
 
-## Any contributions you make will be under the Apache License 2.0
-In short, when you submit code changes, your submissions are understood to be under the same [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) that covers the project. Feel free to contact the maintainers if that's a concern.
+### Code Standards
 
-## Report bugs using Github's [issue tracker](https://github.com/yourusername/gp_ignore_transfer/issues)
-We use GitHub issues to track public bugs. Report a bug by [opening a new issue](https://github.com/yourusername/gp_ignore_transfer/issues/new); it's that easy!
+- Follow the existing code style
+- Add appropriate tests for new functionality
+- Update documentation for any API changes
+- Ensure all tests pass before submitting
 
-## Write bug reports with detail, background, and sample code
+## Reporting Issues
 
-**Great Bug Reports** tend to have:
+For internal issue reporting and tracking, please use the project's issue tracker.
 
-- A quick summary and/or background
-- Steps to reproduce
-  - Be specific!
-  - Give sample code if you can.
-- What you expected would happen
-- What actually happens
-- Notes (possibly including why you think this might be happening, or stuff you tried that didn't work)
+For security issues, please follow the process outlined in [SECURITY.md](SECURITY.md).
 
 ## License
-By contributing, you agree that your contributions will be licensed under its Apache License 2.0.
 
-## References
-This document was adapted from the open-source contribution guidelines for [Facebook's Draft](https://github.com/facebook/draft-js/blob/a9316a723f9e918afde44dea68b5f9f39b7d9b00/CONTRIBUTING.md). 
+By contributing, you agree that your contributions will be licensed under the Apache License 2.0 that covers this project.
+
+All contributions are subject to Snyk's intellectual property policies and the signed Contributor License Agreement.

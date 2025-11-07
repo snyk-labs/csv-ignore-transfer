@@ -34,3 +34,5 @@ comprehensive_robthreefold_analysis_*.txt
 snyk_test_comparison_*.txt
 large_test_dataset*.csv
 large_test_dataset*.txt
+# Snyk Security Extension - AI Rules (auto-generated)
+.cursor/rules/snyk_rules.mdc

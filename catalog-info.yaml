@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: csv-ignore-transfer
+  annotations:
+    github.com/project-slug: snyk-labs/csv-ignore-transfer
+    github.com/team-slug: snyk/cs-engineers
+spec:
+  type: external-tooling
+  lifecycle: "-"
+  owner: cs-engineers

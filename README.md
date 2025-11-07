@@ -2,6 +2,8 @@
 
 A comprehensive tool for transferring ignore rules from CSV data to Snyk issues. Features class-based architecture, enhanced error handling, and detailed reporting capabilities.
 
+> **Note:** This repository is closed to public contributions.
+
 ## 🚀 Key Features
 
 - **Class-based architecture** - Clean, maintainable code structure
@@ -240,11 +242,53 @@ The tool provides structured logging with different levels:
 
 ### Debug Mode
 
-Use `--verbose` flag for detailed debugging information:
+Use `--verbose` (or `-v`) flag for detailed debugging information to understand why matches aren't being made:
 
 ```bash
 python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv --verbose
+# Or use the short form:
+python3 snyk_ignore_transfer.py --org-id YOUR_ORG_ID --csv-file issues.csv -v
 ```
+
+**What Debug Mode Shows:**
+
+The verbose mode provides detailed matching diagnostics including:
+- Total number of Snyk issues and CSV false positives being compared
+- For each CSV row being matched:
+  - The values being searched for (branch, file, CWE, repo URL, line number)
+  - Comparison details for each Snyk issue checked
+  - Specific reason why each Snyk issue doesn't match (branch mismatch, filename mismatch, CWE mismatch, repo URL mismatch)
+  - Confirmation when a match is found with all matching details
+- Summary of total matches found
+
+**Example Debug Output:**
+
+```
+2024-11-05 10:30:15 - INFO - Verbose mode enabled - detailed debug logging activated
+2024-11-05 10:30:15 - DEBUG - Starting matching with 150 Snyk issues and 25 CSV false positives
+2024-11-05 10:30:15 - DEBUG - Matching mode: Exact URL
+================================================================================
+2024-11-05 10:30:15 - DEBUG - CSV row 1 - Looking for matches:
+2024-11-05 10:30:15 - DEBUG -   Branch: main
+2024-11-05 10:30:15 - DEBUG -   File: app.py (from src/app.py)
+2024-11-05 10:30:15 - DEBUG -   CWE: CWE-79
+2024-11-05 10:30:15 - DEBUG -   Line: 42
+2024-11-05 10:30:15 - DEBUG -   Repo URL: https://github.com/myorg/myrepo
+2024-11-05 10:30:15 - DEBUG -   Snyk issue 1: Branch mismatch (Snyk: 'develop' vs CSV: 'main')
+2024-11-05 10:30:15 - DEBUG -   Snyk issue 2: Filename mismatch (Snyk: 'test.py' vs CSV: 'app.py')
+2024-11-05 10:30:15 - DEBUG -   Snyk issue 3: CWE mismatch (Snyk: 'CWE-89' vs CSV: 'CWE-79')
+2024-11-05 10:30:15 - DEBUG -   ✅ MATCH FOUND with Snyk issue!
+2024-11-05 10:30:15 - DEBUG -      Snyk URL: https://github.com/myorg/myrepo
+2024-11-05 10:30:15 - DEBUG -      Snyk File Path: src/app.py
+2024-11-05 10:30:15 - DEBUG -      Snyk Line Range: 40-45
+2024-11-05 10:30:15 - DEBUG -      Line match: CSV line 42 is within Snyk range
+```
+
+This detailed output helps you quickly identify:
+- Data format issues in your CSV (missing fields, wrong format)
+- Mismatches in branch names, file paths, or CWE identifiers
+- Repository URL discrepancies
+- Line number alignment problems
 
 ## 🔗 GitHub Integration
 
