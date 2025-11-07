@@ -16,6 +16,7 @@ import sys
 import os
 import csv
 import requests
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import re
@@ -26,6 +27,25 @@ PROGRESS_BATCH_SIZE = 100  # Progress update frequency
 API_BATCH_SIZE = 100      # API pagination batch size
 TITLE_TRUNCATE_LENGTH = 100  # Max length for titles in reports
 ISSUE_TITLE_DISPLAY_LENGTH = 50  # Max length for issue titles in progress
+
+# Setup logger
+logger = logging.getLogger(__name__)
+
+
+def setup_logging(verbose: bool = False):
+    """
+    Configure logging for the application.
+    
+    Args:
+        verbose: If True, set logging level to DEBUG, otherwise INFO
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger.setLevel(level)
 
 
 class Config:
@@ -635,12 +655,13 @@ class GitHubClient:
 class IssueProcessor:
     """Process and enrich Snyk issues with target information."""
 
-    def __init__(self, snyk_api: SnykAPI, github_client: Optional['GitHubClient'] = None):
+    def __init__(self, snyk_api: SnykAPI, github_client: Optional['GitHubClient'] = None, verbose: bool = False):
         self.snyk_api = snyk_api
         self.github_client = github_client
         self.targets_cache = {}
         self.cwe_mapping = self._build_cwe_mapping()
         self.github_properties_cache = {}  # Cache for GitHub properties to avoid repeated API calls
+        self.verbose = verbose
 
     @staticmethod
     def create_processing_summary(matches: List, results: Dict = None, is_group: bool = False, 
@@ -1089,10 +1110,16 @@ class IssueProcessor:
         # Filter CSV data to only include false positives
         false_positives = [row for row in csv_data if self._is_false_positive(row)]
         print(f"   📋 Found {len(false_positives)} false positive entries in CSV")
+        
+        if self.verbose:
+            logger.debug(f"Starting matching with {len(processed_issues)} Snyk issues and {len(false_positives)} CSV false positives")
+            logger.debug(f"Matching mode: {'Repository Name' if use_repo_name_matching else 'Exact URL'}")
 
         matches = []
+        csv_row_num = 0
 
         for csv_row in false_positives:
+            csv_row_num += 1
             # Extract CSV matching fields with safe string conversion
             csv_branch = self._safe_str(csv_row.get('branch', ''))
             csv_file_path = self._safe_str(csv_row.get('file_path', ''))
@@ -1101,18 +1128,39 @@ class IssueProcessor:
 
             # Skip if missing required fields
             if not csv_branch or not csv_file_path or not csv_cwe:
+                if self.verbose:
+                    logger.debug(f"CSV row {csv_row_num}: SKIPPED - Missing required fields (branch: {bool(csv_branch)}, file_path: {bool(csv_file_path)}, cwe: {bool(csv_cwe)})")
                 continue
 
             # Extract filename from CSV file path
             csv_filename = self._extract_filename(csv_file_path)
             if not csv_filename:
+                if self.verbose:
+                    logger.debug(f"CSV row {csv_row_num}: SKIPPED - Could not extract filename from path: {csv_file_path}")
                 continue
 
             # Extract CSV repository URL and repo name
             csv_repo_url = self._safe_str(csv_row.get(repo_url_field, ''))
             csv_repo_name = self._extract_repo_name(csv_repo_url) if use_repo_name_matching else None
+            
+            if self.verbose:
+                logger.debug(f"\n{'='*80}")
+                logger.debug(f"CSV row {csv_row_num} - Looking for matches:")
+                logger.debug(f"  Branch: {csv_branch}")
+                logger.debug(f"  File: {csv_filename} (from {csv_file_path})")
+                logger.debug(f"  CWE: {csv_cwe}")
+                logger.debug(f"  Line: {csv_line if csv_line else 'N/A'}")
+                if use_repo_name_matching:
+                    logger.debug(f"  Repo Name: {csv_repo_name}")
+                else:
+                    logger.debug(f"  Repo URL: {csv_repo_url}")
 
+            match_found = False
+            snyk_issues_checked = 0
+            near_misses = []  # Track near misses (2-3 out of 4 criteria match)
+            
             for processed_issue in processed_issues:
+                snyk_issues_checked += 1
                 issue_data = processed_issue['key_data']
 
                 # Extract Snyk matching fields with safe string conversion
@@ -1125,6 +1173,8 @@ class IssueProcessor:
 
                 # Skip if missing required fields
                 if not snyk_branch or not snyk_file_path or not snyk_cwe or not snyk_target_url:
+                    if self.verbose and snyk_issues_checked <= 3:  # Only log first few to avoid spam
+                        logger.debug(f"  Snyk issue {snyk_issues_checked}: Missing required fields")
                     continue
 
                 # Extract filename from Snyk file path
@@ -1132,41 +1182,117 @@ class IssueProcessor:
                 if not snyk_filename:
                     continue
 
-                # Required Match 1: Branch must match exactly
-                if snyk_branch != csv_branch:
-                    continue
-
-                # Required Match 2: File name must match exactly
-                if snyk_filename != csv_filename:
-                    continue
-
-                # Required Match 3: CWE must match exactly
-                if snyk_cwe != csv_cwe:
-                    continue
-
-                # Repository matching logic
-                if use_repo_name_matching:
-                    # Repository Name Mode: Match by repo name + GitHub properties
-                    snyk_repo_name = self._extract_repo_name(snyk_target_url)
-                    if not snyk_repo_name or snyk_repo_name != csv_repo_name:
-                        continue
+                # Track which criteria match (for near-miss detection in verbose mode)
+                if self.verbose:
+                    matches_criteria = []
+                    mismatches_criteria = []
                     
-                    # GitHub properties validation
-                    if self.github_client and self.github_client.github:
-                        try:
-                            properties = self.get_github_property(snyk_target_url, 'appsec.properties', 'old_repo_url', snyk_branch)
-                            if properties and 'old_repo_url' in properties:
-                                old_repo_url = properties['old_repo_url']
-                                if old_repo_url and old_repo_url.lower() != csv_repo_url.lower():
-                                    # old_repo_url doesn't match CSV URL, skip this match
-                                    continue
-                        except Exception as e:
-                            print(f"   ⚠️  Warning: Could not fetch GitHub properties for {snyk_target_url}: {e}")
-                            # Continue without GitHub validation if properties can't be fetched
+                    # Check 1: Branch
+                    branch_match = snyk_branch == csv_branch
+                    if branch_match:
+                        matches_criteria.append('branch')
+                    else:
+                        mismatches_criteria.append(f"branch (Snyk: '{snyk_branch}' vs CSV: '{csv_branch}')")
+                    
+                    # Check 2: Filename
+                    filename_match = snyk_filename == csv_filename
+                    if filename_match:
+                        matches_criteria.append('filename')
+                    else:
+                        mismatches_criteria.append(f"filename (Snyk: '{snyk_filename}' vs CSV: '{csv_filename}')")
+                    
+                    # Check 3: CWE
+                    cwe_match = snyk_cwe == csv_cwe
+                    if cwe_match:
+                        matches_criteria.append('CWE')
+                    else:
+                        mismatches_criteria.append(f"CWE (Snyk: '{snyk_cwe}' vs CSV: '{csv_cwe}')")
+                    
+                    # Check 4: Repository
+                    repo_match = False
+                    if use_repo_name_matching:
+                        snyk_repo_name = self._extract_repo_name(snyk_target_url)
+                        repo_match = snyk_repo_name and snyk_repo_name == csv_repo_name
+                        if repo_match:
+                            matches_criteria.append('repo_name')
+                        else:
+                            mismatches_criteria.append(f"repo_name (Snyk: '{snyk_repo_name}' vs CSV: '{csv_repo_name}')")
+                    else:
+                        repo_match = csv_repo_url and snyk_target_url == csv_repo_url
+                        if repo_match:
+                            matches_criteria.append('repo_url')
+                        else:
+                            mismatches_criteria.append(f"repo_url (Snyk: '{snyk_target_url}' vs CSV: '{csv_repo_url}')")
+                    
+                    # Calculate match score
+                    match_count = len(matches_criteria)
+                    
+                    # Log first few comparisons
+                    if snyk_issues_checked <= 3:
+                        logger.debug(f"  Snyk issue {snyk_issues_checked}: {match_count}/4 criteria match - {', '.join(matches_criteria) if matches_criteria else 'none'}")
+                        if mismatches_criteria:
+                            for mismatch in mismatches_criteria:
+                                logger.debug(f"    ❌ {mismatch}")
+                    
+                    # Track near misses (2 or 3 out of 4 matches)
+                    if match_count >= 2 and match_count < 4:
+                        near_misses.append({
+                            'match_count': match_count,
+                            'matches': matches_criteria,
+                            'mismatches': mismatches_criteria,
+                            'snyk_issue': processed_issue,
+                            'snyk_branch': snyk_branch,
+                            'snyk_filename': snyk_filename,
+                            'snyk_cwe': snyk_cwe,
+                            'snyk_url': snyk_target_url,
+                            'snyk_path': snyk_file_path,
+                            'snyk_line_range': f"{snyk_start_line}-{snyk_end_line}" if snyk_start_line and snyk_end_line else "N/A"
+                        })
+                    
+                    # If all 4 match, this is a perfect match
+                    if match_count == 4:
+                        match_found = True
+                    else:
+                        continue  # Not all criteria match, continue to next issue
                 else:
-                    # Traditional Mode: Exact URL matching
-                    if csv_repo_url and snyk_target_url != csv_repo_url:
+                    # Non-verbose mode: use original fast-fail logic
+                    # Required Match 1: Branch must match exactly
+                    if snyk_branch != csv_branch:
                         continue
+
+                    # Required Match 2: File name must match exactly
+                    if snyk_filename != csv_filename:
+                        continue
+
+                    # Required Match 3: CWE must match exactly
+                    if snyk_cwe != csv_cwe:
+                        continue
+
+                    # Repository matching logic
+                    if use_repo_name_matching:
+                        # Repository Name Mode: Match by repo name + GitHub properties
+                        snyk_repo_name = self._extract_repo_name(snyk_target_url)
+                        if not snyk_repo_name or snyk_repo_name != csv_repo_name:
+                            continue
+                        
+                        # GitHub properties validation
+                        if self.github_client and self.github_client.github:
+                            try:
+                                properties = self.get_github_property(snyk_target_url, 'appsec.properties', 'old_repo_url', snyk_branch)
+                                if properties and 'old_repo_url' in properties:
+                                    old_repo_url = properties['old_repo_url']
+                                    if old_repo_url and old_repo_url.lower() != csv_repo_url.lower():
+                                        # old_repo_url doesn't match CSV URL, skip this match
+                                        continue
+                            except Exception as e:
+                                print(f"   ⚠️  Warning: Could not fetch GitHub properties for {snyk_target_url}: {e}")
+                                # Continue without GitHub validation if properties can't be fetched
+                    else:
+                        # Traditional Mode: Exact URL matching
+                        if csv_repo_url and snyk_target_url != csv_repo_url:
+                            continue
+                    
+                    match_found = True
 
                 # Optional Match: Line numbers (CSV line within Snyk range)
                 line_match = False
@@ -1179,7 +1305,51 @@ class IssueProcessor:
                 line_status = "✅" if line_match else "❓"
                 repo_status = "✅" if (use_repo_name_matching and csv_repo_name) or (not use_repo_name_matching and csv_repo_url) else "❓"
                 print(f"   ✅ Match found: {csv_filename} | {csv_cwe} | {csv_branch} | Repo: {repo_status} | Line: {line_status}")
+                
+                if self.verbose:
+                    logger.debug(f"  ✅ MATCH FOUND with Snyk issue!")
+                    logger.debug(f"     Snyk URL: {snyk_target_url}")
+                    logger.debug(f"     Snyk File Path: {snyk_file_path}")
+                    logger.debug(f"     Snyk Line Range: {snyk_start_line}-{snyk_end_line}")
+                    if line_match:
+                        logger.debug(f"     Line match: CSV line {csv_line} is within Snyk range")
+                    elif csv_line:
+                        logger.debug(f"     Line mismatch: CSV line {csv_line} not in Snyk range {snyk_start_line}-{snyk_end_line}")
+                
                 break  # Move to next CSV row
+            
+            if self.verbose and not match_found:
+                logger.debug(f"  ❌ NO MATCH FOUND after checking {snyk_issues_checked} Snyk issues")
+                
+                # Report near misses (potential matches with 2-3 out of 4 criteria)
+                if near_misses:
+                    # Sort by match count (highest first)
+                    near_misses.sort(key=lambda x: x['match_count'], reverse=True)
+                    
+                    # Report top near misses
+                    logger.debug(f"\n  🔍 NEAR MISSES - Potential matches found:")
+                    for i, nm in enumerate(near_misses[:5], 1):  # Show top 5
+                        logger.debug(f"\n  Near Miss #{i}: {nm['match_count']}/4 criteria match")
+                        logger.debug(f"    ✅ Matching: {', '.join(nm['matches'])}")
+                        logger.debug(f"    ❌ Mismatching:")
+                        for mismatch in nm['mismatches']:
+                            logger.debug(f"       - {mismatch}")
+                        logger.debug(f"    Snyk Issue Details:")
+                        logger.debug(f"       URL: {nm['snyk_url']}")
+                        logger.debug(f"       Path: {nm['snyk_path']}")
+                        logger.debug(f"       Line Range: {nm['snyk_line_range']}")
+                    
+                    if len(near_misses) > 5:
+                        logger.debug(f"\n  ... and {len(near_misses) - 5} more near misses")
+                    
+                    logger.debug(f"\n  💡 TIP: Review these near misses to identify potential CSV corrections")
+                else:
+                    logger.debug(f"     Most common reason: No Snyk issue with matching branch+file+CWE+repo combination")
+                    logger.debug(f"     No near misses found (no issues with 2-3 matching criteria)")
+
+        if self.verbose:
+            logger.debug(f"\n{'='*80}")
+            logger.debug(f"Matching complete: {len(matches)} total matches found out of {len(false_positives)} CSV entries")
 
         return matches
 
@@ -1940,7 +2110,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
                 # Create processing summary for single org
                 processing_summary = IssueProcessor.create_processing_summary(matches, results)
                 
-                processor = IssueProcessor(snyk_api, github_client)
+                processor = IssueProcessor(snyk_api, github_client, verbose=args.verbose)
                 processor.generate_severity_report(matches, severity_report_file, 
                                                      is_group_processing=False, 
                                                      processing_summary=processing_summary)
@@ -1966,7 +2136,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             print(f"   ✅ Using pre-loaded CSV data ({len(csv_data)} rows)")
             
             # Initialize issue processor
-            processor = IssueProcessor(snyk_api, github_client)
+            processor = IssueProcessor(snyk_api, github_client, verbose=args.verbose)
             
             # Get all code issues for the organization
             print(f"   🚀 Fetching all code issues for organization {org_id}")
@@ -2091,7 +2261,7 @@ def process_single_organization(snyk_api: SnykAPI, args, org_id: str, org_name: 
             print(f"   🔍 Standard matching workflow")
             
             # Initialize issue processor
-            processor = IssueProcessor(snyk_api, github_client)
+            processor = IssueProcessor(snyk_api, github_client, verbose=args.verbose)
             
             # Get all code issues for the organization
             print(f"   🚀 Fetching all code issues for organization {org_id}")
@@ -2302,6 +2472,12 @@ GitHub Integration:
                        help='Use repository name matching instead of exact URL matching. Fetches old_repo_url from appsec.properties for migration scenarios.')
 
     args = parser.parse_args()
+    
+    # Setup logging based on verbose flag
+    setup_logging(verbose=args.verbose)
+    
+    if args.verbose:
+        logger.info("Verbose mode enabled - detailed debug logging activated")
 
     # Validate arguments - check for org-id or group-id
     if not args.org_id and not args.group_id:
@@ -2464,7 +2640,7 @@ GitHub Integration:
             all_matches, group_stats, is_group=True, group_stats=group_stats
         )
         
-        processor = IssueProcessor(snyk_api, github_client)
+        processor = IssueProcessor(snyk_api, github_client, verbose=args.verbose)
         processor.generate_severity_report(all_matches, group_report_file, 
                                              is_group_processing=True, 
                                              processing_summary=processing_summary)
@@ -2517,7 +2693,7 @@ GitHub Integration:
         # Create processing summary for single org
         processing_summary = IssueProcessor.create_processing_summary(matches, results)
         
-        processor = IssueProcessor(snyk_api, github_client)
+        processor = IssueProcessor(snyk_api, github_client, verbose=args.verbose)
         processor.generate_severity_report(matches, severity_report_file, 
                                              is_group_processing=False, 
                                              processing_summary=processing_summary)
