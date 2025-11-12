@@ -12,8 +12,6 @@ This script queries Snyk organizations to find ignore policies created by the ig
 - ✅ Search by custom ignore reason (defaults to transfer tool's reason)
 - ✅ Export detailed policy information to CSV
 - ✅ Console summary with statistics
-- ✅ Pagination handling for large datasets
-- ✅ Progress tracking for group-level queries
 
 ## Prerequisites
 
@@ -100,7 +98,7 @@ Example:
 📊 IGNORE POLICIES SUMMARY
 ================================================================================
 Organization: Single Organization
-Ignore Reason: "testing cci ignore"
+Ignore Reason: "False positive identified via CSV analysis"
 Total Ignore Policies: 8
 
 📊 By Ignore Type:
@@ -130,7 +128,6 @@ The CSV file contains the following columns:
 | `created_by_name` | Name of user who created the policy |
 | `created_by_email` | Email of user who created the policy |
 
-**Note:** The `key_asset` field contains the Snyk issue IDs that are being ignored. This is the key identifier for cross-referencing with your Snyk projects.
 
 ## Examples
 
@@ -179,70 +176,12 @@ Example group summary:
 Total Organizations: 266
 Total Ignore Policies: 29
 Breakdown by Organization:
-   business: 7
+   Customer Success: 7
    code consistent ignores demo: 12
-   Rob's Universal Broker demo: 3
    Team Alpha: 4
-   Team Gamma: 3
+   Team Beta: 3
 ================================================================================
 ```
-
-## How It Works
-
-1. **Initialize**: Connects to Snyk API using your token
-2. **Fetch Policies**: Queries the `/rest/orgs/{org_id}/policies` endpoint
-3. **Filter**: Searches for policies with `action_type: "ignore"` and matching reason text
-4. **Extract Details**: Parses policy attributes, conditions, and metadata
-5. **Report**: Generates console output and optional CSV export
-
-## Troubleshooting
-
-### No Policies Found
-
-If the script returns 0 policies:
-- Verify the organization has ignore policies created by the transfer tool
-- Check that the `--ignore-reason` matches (uses partial matching, case-insensitive)
-- Ensure your API token has read access to policies
-
-### Permission Errors
-
-```
-⚠️  Warning: Error fetching page 1: 403 Forbidden
-```
-
-Your API token needs the appropriate permissions. Contact your Snyk admin.
-
-### Import Error
-
-```
-❌ Error: Could not import from snyk_ignore_transfer.py
-```
-
-Make sure `snyk_ignore_transfer.py` is in the same directory as this script.
-
-## Integration with Transfer Tool
-
-This script is designed to work alongside `snyk_ignore_transfer.py`:
-
-1. **Transfer Tool**: Creates organization-level ignore policies
-2. **List Tool**: Surfaces and reports on those policies
-
-The default ignore reason matches what the transfer tool uses:
-```
-"False positive identified via CSV analysis"
-```
-
-## API Endpoints Used
-
-- `GET /rest/orgs/{org_id}/policies` - List all policies
-- `GET /rest/groups/{group_id}/orgs` - Get organizations in group
-
-## Notes
-
-- Policy events are not included in the output (they're typically empty for API-created policies)
-- The script uses pagination to handle large policy sets
-- Ignore reason matching is case-insensitive and partial
-- Group processing creates separate CSVs per organization
 
 ## See Also
 
